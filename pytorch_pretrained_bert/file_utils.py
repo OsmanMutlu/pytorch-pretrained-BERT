@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 PYTORCH_PRETRAINED_BERT_CACHE = Path(os.getenv('PYTORCH_PRETRAINED_BERT_CACHE',
                                                Path.home() / '.pytorch_pretrained_bert'))
 
+logger.info(PYTORCH_PRETRAINED_BERT_CACHE)
 
 def url_to_filename(url: str, etag: str = None) -> str:
     """
@@ -41,6 +42,15 @@ def url_to_filename(url: str, etag: str = None) -> str:
         etag_bytes = etag.encode('utf-8')
         etag_hash = sha256(etag_bytes)
         filename += '.' + etag_hash.hexdigest()
+
+    return filename
+
+def url_to_filename2(url):
+
+    if ".txt" in url:
+        filename = "26bc1ad6c0ac742e9b52263248f6d0f00068293b33709fae12320c0e35ccfbbb.542ce4285a40d23a559526243235df47c5f75c197f04f37d1a0c124c32c9a084"
+    else:
+        filename = "9c41111e2de84547a463fd39217199738d1e3deb72d4fec4399e6e241983c6f0.ae3cef932725ca7a30cdcb93fc6e09150a55e2a130ec7af63975a16c153ae2ba"
 
     return filename
 
@@ -166,8 +176,10 @@ def get_from_cache(url: str, cache_dir: str = None) -> str:
     if cache_dir is None:
         cache_dir = PYTORCH_PRETRAINED_BERT_CACHE
 
+    logger.info(cache_dir)
     os.makedirs(cache_dir, exist_ok=True)
 
+    """
     # Get eTag to add to filename, if it exists.
     if url.startswith("s3://"):
         etag = s3_etag(url)
@@ -177,8 +189,9 @@ def get_from_cache(url: str, cache_dir: str = None) -> str:
             raise IOError("HEAD request failed for url {} with status code {}"
                           .format(url, response.status_code))
         etag = response.headers.get("ETag")
+    """
 
-    filename = url_to_filename(url, etag)
+    filename = url_to_filename2(url)
 
     # get cache path to put the file
     cache_path = os.path.join(cache_dir, filename)

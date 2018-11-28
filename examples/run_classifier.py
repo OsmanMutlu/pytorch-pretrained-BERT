@@ -24,13 +24,15 @@ import logging
 import argparse
 import random
 from tqdm import tqdm, trange
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 
-from pytorch_pretrained_bert.tokenization import BertTokenizer
+from pytorch_pretrained_bert.tokenization import printable_text, BertTokenizer
 from pytorch_pretrained_bert.modeling import BertForSequenceClassification
 from pytorch_pretrained_bert.optimization import BertAdam
 
@@ -39,6 +41,10 @@ logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(messa
                     level = logging.INFO)
 logger = logging.getLogger(__name__)
 
+PYTORCH_PRETRAINED_BERT_CACHE = Path(os.getenv('PYTORCH_PRETRAINED_BERT_CACHE',
+                                               Path.home() / '.pytorch_pretrained_bert'))
+
+logger.info(PYTORCH_PRETRAINED_BERT_CACHE)
 
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
@@ -96,6 +102,27 @@ class DataProcessor(object):
                 lines.append(line)
             return lines
 
+class DataProcessor2(object):
+    """Base class for data converters for sequence classification data sets."""
+
+    def get_train_examples(self, data_dir):
+        """Gets a collection of `InputExample`s for the train set."""
+        raise NotImplementedError()
+
+    def get_dev_examples(self, data_dir):
+        """Gets a collection of `InputExample`s for the dev set."""
+        raise NotImplementedError()
+
+    def get_labels(self):
+        """Gets the list of labels for this data set."""
+        raise NotImplementedError()
+
+    @classmethod
+    def _read_tsv(cls, input_file, quotechar=None):
+        """Reads a comma separated value file."""
+        lines = pd.read_csv(input_file)
+        return lines
+
 
 class MrpcProcessor(DataProcessor):
     """Processor for the MRPC data set (GLUE version)."""
@@ -129,6 +156,36 @@ class MrpcProcessor(DataProcessor):
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         return examples
 
+class HyperProcessor(DataProcessor2):
+    """Processor for the Hyperpartisan data set."""
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train3.csv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train_small.csv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "val_small.csv")), "dev")
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in lines.iterrows():
+            guid = i
+            text_a = line.text
+            label = str(line.hyperpartisan)
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+
+        return examples
+
 
 class MnliProcessor(DataProcessor):
     """Processor for the MultiNLI data set (GLUE version)."""
@@ -155,8 +212,8 @@ class MnliProcessor(DataProcessor):
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, line[0])
-            text_a = line[8])
-            text_b = line[9])
+            text_a = line[8]
+            text_b = line[9]
             label = line[-1]
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
@@ -189,8 +246,7 @@ class ColaProcessor(DataProcessor):
             label = line[1]
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
-        return examples
-
+        return examples    
 
 def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer):
     """Loads a data file into a list of `InputBatch`s."""
@@ -273,7 +329,7 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
             logger.info("*** Example ***")
             logger.info("guid: %s" % (example.guid))
             logger.info("tokens: %s" % " ".join(
-                    [str(x) for x in tokens]))
+                    [printable_text(x) for x in tokens]))
             logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
             logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
             logger.info(
@@ -430,6 +486,7 @@ def main():
         "cola": ColaProcessor,
         "mnli": MnliProcessor,
         "mrpc": MrpcProcessor,
+        "hyperpartisan": HyperProcessor,
     }
 
     if args.local_rank == -1 or args.no_cuda:
@@ -482,8 +539,7 @@ def main():
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
     # Prepare model
-    model = BertForSequenceClassification.from_pretrained(args.bert_model, len(label_list),
-                cache_dir=PYTORCH_PRETRAINED_BERT_CACHE / 'distributed_{}'.format(args.local_rank))
+    model = BertForSequenceClassification.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE)
     if args.fp16:
         model.half()
     model.to(device)
