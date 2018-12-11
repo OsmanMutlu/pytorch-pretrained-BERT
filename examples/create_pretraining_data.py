@@ -16,9 +16,11 @@
 import collections
 import random
 import pandas as pd
-import spacy
+#import spacy
 import codecs
 import argparse
+from dask import dataframe as dd
+from dask.multiprocessing import get
 
 from pytorch_pretrained_bert.tokenization import BertTokenizer
 
@@ -34,7 +36,7 @@ class TrainingInstance(object):
 
 def instance_to_columns(row,tokenizer,max_seq_length):
 
-    instance = row.instance
+    instance = row.instance['instance']
     input_ids = tokenizer.convert_tokens_to_ids(instance.tokens)
     input_mask = [1] * len(input_ids)
     segment_ids = list(instance.segment_ids)
@@ -180,20 +182,34 @@ def create_training_instances2(input_file, output_file, tokenizer, max_seq_lengt
     # that the "next sentence prediction" task doesn't span between documents.
     df = pd.read_csv(input_file)
     df['tokens'] = ""
+    df['instances'] = ""
     df_instances = pd.DataFrame(columns=["instance","input_ids","input_mask","segment_ids","masked_lm_labels","next_sent_label"])
-    df = df.apply(lambda row : get_tokens(row,tokenizer), axis=1)
+    df = dd.from_pandas(df,npartitions=8).map_partitions(lambda x : x.apply(lambda row : get_tokens(row,tokenizer), axis=1),meta=df).compute(get=get)
+#    df = df.apply(lambda row : get_tokens(row,tokenizer), axis=1)
     df = df.sample(frac=1).reset_index(drop=True) # Shuffle
     vocab_words = list(tokenizer.vocab.keys())
     instances = []
     for _ in range(dupe_factor):
+        # for ind,row in df.iterrows():
+        #     df_instances = df_instances.append(create_instances_from_document2(
+        #         df, ind, max_seq_length, short_seq_prob,
+        #         masked_lm_prob, max_predictions_per_seq, vocab_words, rng), ignore_index=True)
+
+        # df = df.apply(lambda row : create_instances_from_document2(df, row, max_seq_length, short_seq_prob,
+        #                                                            masked_lm_prob, max_predictions_per_seq, vocab_words, rng), axis=1)
+        df = dd.from_pandas(df,npartitions=8).map_partitions(lambda x : x.apply(lambda row : create_instances_from_document2(df, row, max_seq_length, short_seq_prob,
+                                                                                                                             masked_lm_prob, max_predictions_per_seq, vocab_words, rng),
+                                                                                axis=1),meta=df).compute(get=get)
+
         for ind,row in df.iterrows():
-            df_instances = df_instances.append(create_instances_from_document2(
-                df, ind, max_seq_length, short_seq_prob,
-                masked_lm_prob, max_predictions_per_seq, vocab_words, rng), ignore_index=True)
+            df_instances = df_instances.append([{"instance" : x} for x in row.instances], ignore_index=True)
+        
 
     df_instances = df_instances.sample(frac=1).reset_index(drop=True) # Shuffle
     print("instance to columns")
-    df_instances = df_instances.apply(lambda row : instance_to_columns(row,tokenizer,max_seq_length), axis=1)
+#    df_instances = df_instances.apply(lambda row : instance_to_columns(row,tokenizer,max_seq_length), axis=1)
+    df_instances = dd.from_pandas(df_instances,npartitions=8).map_partitions(lambda x : x.apply(lambda row : instance_to_columns(row,tokenizer,max_seq_length),
+                                                                                                axis=1),meta=df_instances).compute(get=get)
     print("Done")
     df_instances = df_instances.drop(columns=["instance"])
     
@@ -321,11 +337,13 @@ def create_training_instances2(input_file, output_file, tokenizer, max_seq_lengt
 
 #     return instances
 
+
 def create_instances_from_document2(
-    df, document_index, max_seq_length, short_seq_prob,
+    df, row, max_seq_length, short_seq_prob,
     masked_lm_prob, max_predictions_per_seq, vocab_words, rng):
     """Creates `TrainingInstance`s for a single document."""
-    document = df.iloc[document_index].tokens
+    document_index = row.name
+    document = row.tokens
 
     # Account for [CLS], [SEP], [SEP]
     max_num_tokens = max_seq_length - 3
@@ -340,7 +358,7 @@ def create_instances_from_document2(
     # `max_seq_length` is a hard limit.
     target_seq_length = max_num_tokens
     if rng.random() < short_seq_prob:
-        target_seq_length = rng.randint(2, max_num_tokens)
+        target_seq_length = rng.randint(2*min_sent_length + 1, max_num_tokens)
 
     # We DON'T just concatenate all of the tokens from a document into a long
     # sequence and choose an arbitrary split point because this would make the
@@ -348,27 +366,15 @@ def create_instances_from_document2(
     # segments "A" and "B" based on the actual "sentences" provided by the user
     # input.
     instances = []
-
-    #Index tut, max seq length kadar arttir, random olursa max seq length - tokens a length kadar geri cekersin, en son max seq length ten kucukse min sent length ten buyukse random 2 min sent length ten buyukse not random, degilse next doc 
-    # if len(document) >= max_seq_length:
-    #     division1 = rng.randint(0,len(document) - max_seq_length)
-
-    #     current_chunk = document[division1:division1+max_seq_length+1]
-    #     division2 = rng.randint(min_sent_length,max_seq_length - min_sent_length)
-    #     tokens_a = 
     
     i = 0
-#    print("Document length : " + str(len(document)))
     while i < len(document) - min_sent_length:
         is_random_next = False
-        if len(document) - i >= max_seq_length:
-#            print("First")
-            a_end = rng.randint(i + min_sent_length, i + max_seq_length - min_sent_length)
+        if len(document) - i >= target_seq_length:
+            a_end = rng.randint(i + min_sent_length, i + target_seq_length - min_sent_length)
             tokens_a = document[i:a_end]
 
             if rng.random() < 0.5:
-#                print("FirstRandom")
-                #Random
                 is_random_next = True
                 while True:
                     rand_index = rng.randint(0,len(df) - 1)
@@ -377,36 +383,22 @@ def create_instances_from_document2(
                         if len(rand_document) >= min_sent_length:
                             break
 
-                if len(rand_document) > max_seq_length - len(tokens_a):
-#                    print("FirstRandom1")
-                    b_start = rng.randint(0,len(rand_document) - max_seq_length + len(tokens_a))
-#                    print("Random doc length : " + str(len(rand_document)))
-#                    print("Tokens a length : " + str(len(tokens_a)))
-#                    print(b_start)
-                    tokens_b = rand_document[b_start:b_start+max_seq_length-len(tokens_a)]
+                if len(rand_document) > target_seq_length - len(tokens_a):
+                    b_start = rng.randint(0,len(rand_document) - target_seq_length + len(tokens_a))
+                    tokens_b = rand_document[b_start:b_start+target_seq_length-len(tokens_a)]
                 else:
-#                    print("FirstRandom2")
-                    #We handle padding somewhere else
                     tokens_b = rand_document
 
                 i -= len(tokens_b)
                 
             else:
-#                print("FirstActual")
-                #Actual
-                tokens_b = document[a_end:i+max_seq_length]
-#            print("EndFirst")
+                tokens_b = document[a_end:i+target_seq_length]
 
         elif len(document) - i >= 2*min_sent_length:
-#            print("Second")
-            #No random here
             a_end = rng.randint(i + min_sent_length, len(document) - min_sent_length)
             tokens_a = document[i:a_end]
             tokens_b = document[a_end:]
-#            print("EndSecond")
         else:
-#            print("Third")
-            #Always random here
             tokens_a = document[i:]
             is_random_next = True
             while True:
@@ -416,28 +408,22 @@ def create_instances_from_document2(
                     if len(rand_document) >= min_sent_length:
                         break
 
-            if len(rand_document) >= max_seq_length - len(tokens_a):
-#                print("Third1")
-                b_start = rng.randint(0,len(rand_document) - max_seq_length + len(tokens_a))
-                tokens_b = rand_document[b_start:b_start+max_seq_length - len(tokens_a)]
+            if len(rand_document) >= target_seq_length - len(tokens_a):
+                b_start = rng.randint(0,len(rand_document) - target_seq_length + len(tokens_a))
+                tokens_b = rand_document[b_start:b_start+target_seq_length - len(tokens_a)]
             else:
-#                print("Third2")
-                #We handle paddind somewhere else
                 tokens_b = rand_document
 
             i -= len(tokens_b)
-#            print("EndThird")
 
-        i += max_seq_length
+        i += target_seq_length
 
-#        print("Truncate")
         truncate_seq_pair(tokens_a, tokens_b, max_num_tokens, rng)
 
 
         assert len(tokens_a) >= 1
         assert len(tokens_b) >= 1
 
-#        print("Add labels")
         tokens = []
         segment_ids = []
         tokens.append("[CLS]")
@@ -456,10 +442,8 @@ def create_instances_from_document2(
                 segment_ids.append(1)
         tokens.append("[SEP]")
         segment_ids.append(1)
-#        print("Add masked lm")
         (tokens,masked_lm_labels) = create_masked_lm_predictions(
             tokens, masked_lm_prob, max_predictions_per_seq, vocab_words, rng)
-#        print("Add instance")
         instance = {"instance" : TrainingInstance(
             tokens=tokens,
             segment_ids=segment_ids,
@@ -467,8 +451,8 @@ def create_instances_from_document2(
             masked_lm_labels=masked_lm_labels)}
         instances.append(instance)
 
-    return instances
-
+    row.instances = instances
+    return row
 
 
 def create_masked_lm_predictions(tokens, masked_lm_prob,
