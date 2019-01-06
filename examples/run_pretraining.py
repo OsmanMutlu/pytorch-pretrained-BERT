@@ -89,12 +89,7 @@ class HyperProcessor(DataProcessor):
         """See base class."""
         logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train_sent.csv")))
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "pre_val_small.tsv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "val_small.csv")), "dev")
+            self._read_tsv(os.path.join(data_dir, "pre_train.tsv")), "train")
 
     def get_labels(self):
         """See base class."""
@@ -394,6 +389,7 @@ def main():
         logger.info("  Num examples = %d", len(train_features))
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num steps = %d", num_train_steps)
+#        logger.info("inpput_id size = %d", len(train_features[0].input_ids))
         all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
@@ -407,13 +403,16 @@ def main():
 
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
 
+        logger.info("Created DataLoader")
         model.train()
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-                batch = tuple(t.to(device) for t in batch)
+                batch = tuple(t.to(device).view(args.train_batch_size, -1) for t in batch)
                 input_ids, input_mask, segment_ids, masked_lm_ids, next_sent_label = batch
+                # logger.info(input_ids)
+                # logger.info(next_sent_label)
                 loss, _ = model(input_ids, segment_ids, input_mask, masked_lm_ids, next_sent_label)
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.

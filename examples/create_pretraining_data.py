@@ -52,6 +52,11 @@ def instance_to_columns(row,tokenizer,max_seq_length):
     assert len(input_ids) == max_seq_length
     assert len(input_mask) == max_seq_length
     assert len(segment_ids) == max_seq_length
+
+    while len(masked_lm_ids) > max_seq_length:
+        print("Don't know why!")
+        masked_lm_ids.pop()
+
     assert len(masked_lm_ids) == max_seq_length
 
     for i,x in enumerate(masked_lm_ids):
@@ -181,15 +186,19 @@ def create_training_instances2(input_file, output_file, tokenizer, max_seq_lengt
     # (2) Blank lines between documents. Document boundaries are needed so
     # that the "next sentence prediction" task doesn't span between documents.
     df = pd.read_csv(input_file)
+    print("Loaded")
+    df.hyperpartisan = None
     df['tokens'] = ""
     df['instances'] = ""
     df_instances = pd.DataFrame(columns=["instance","input_ids","input_mask","segment_ids","masked_lm_labels","next_sent_label"])
     df = dd.from_pandas(df,npartitions=8).map_partitions(lambda x : x.apply(lambda row : get_tokens(row,tokenizer), axis=1),meta=df).compute(get=get)
+    print("Tokenized")
+    df.text = None
 #    df = df.apply(lambda row : get_tokens(row,tokenizer), axis=1)
     df = df.sample(frac=1).reset_index(drop=True) # Shuffle
     vocab_words = list(tokenizer.vocab.keys())
     instances = []
-    for _ in range(dupe_factor):
+    for i in range(dupe_factor):
         # for ind,row in df.iterrows():
         #     df_instances = df_instances.append(create_instances_from_document2(
         #         df, ind, max_seq_length, short_seq_prob,
@@ -201,10 +210,18 @@ def create_training_instances2(input_file, output_file, tokenizer, max_seq_lengt
                                                                                                                              masked_lm_prob, max_predictions_per_seq, vocab_words, rng),
                                                                                 axis=1),meta=df).compute(get=get)
 
+        print("Created instances " + str(i + 1))
+
         for ind,row in df.iterrows():
-            df_instances = df_instances.append([{"instance" : x} for x in row.instances], ignore_index=True)
+            if row.instances:
+                df_instances = df_instances.append([{"instance" : x} for x in row.instances], ignore_index=True)
+
+        print("Got instances" + str(i + 1))
+
+        df.instances = None
         
 
+    df = None
     df_instances = df_instances.sample(frac=1).reset_index(drop=True) # Shuffle
     print("instance to columns")
 #    df_instances = df_instances.apply(lambda row : instance_to_columns(row,tokenizer,max_seq_length), axis=1)
