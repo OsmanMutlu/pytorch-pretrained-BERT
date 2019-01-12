@@ -226,11 +226,11 @@ def main():
                         type=str,
                         required=True,
                         help="The name of the task to train.")
-    parser.add_argument("--output_dir",
-                        default=None,
-                        type=str,
-                        required=True,
-                        help="The output directory where the model checkpoints will be written.")
+    # parser.add_argument("--output_dir",
+    #                     default=None,
+    #                     type=str,
+    #                     required=True,
+    #                     help="The output directory where the model checkpoints will be written.")
 
     ## Other parameters
     parser.add_argument("--max_seq_length",
@@ -409,11 +409,9 @@ def main():
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-                batch = tuple(t.to(device).view(args.train_batch_size, -1) for t in batch)
+                batch = tuple(t.to(device) for t in batch) # .view(args.train_batch_size, -1)
                 input_ids, input_mask, segment_ids, masked_lm_ids, next_sent_label = batch
-                # logger.info(input_ids)
-                # logger.info(next_sent_label)
-                loss, _ = model(input_ids, segment_ids, input_mask, masked_lm_ids, next_sent_label)
+                loss = model(input_ids, segment_ids, input_mask, masked_lm_ids, next_sent_label)
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
                 if args.fp16 and args.loss_scale != 1.0:
@@ -445,6 +443,10 @@ def main():
                         optimizer.step()
                     model.zero_grad()
                     global_step += 1
+
+        save_model = model.module if hasattr(model, 'module') else model  # To handle multi gpu
+        output_file = os.path.join(args.data_dir, "pytorch_model.bin")
+        torch.save(save_model.state_dict(), output_file)
 
     # if args.do_eval:
     #     eval_examples = processor.get_dev_examples(args.data_dir)

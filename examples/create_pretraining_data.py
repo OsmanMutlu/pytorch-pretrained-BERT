@@ -176,8 +176,8 @@ def get_tokens(row,tokenizer):
     return row
 
 def create_training_instances2(input_file, output_file, tokenizer, max_seq_length,
-                              dupe_factor, short_seq_prob, masked_lm_prob,
-                              max_predictions_per_seq, rng):
+                               dupe_factor, short_seq_prob, masked_lm_prob,
+                               max_predictions_per_seq, rng, random_seed):
     """Create `TrainingInstance`s from raw text."""
     # Input file format:
     # (1) One sentence per line. These should ideally be actual sentences, not
@@ -207,7 +207,8 @@ def create_training_instances2(input_file, output_file, tokenizer, max_seq_lengt
         # df = df.apply(lambda row : create_instances_from_document2(df, row, max_seq_length, short_seq_prob,
         #                                                            masked_lm_prob, max_predictions_per_seq, vocab_words, rng), axis=1)
         df = dd.from_pandas(df,npartitions=8).map_partitions(lambda x : x.apply(lambda row : create_instances_from_document2(df, row, max_seq_length, short_seq_prob,
-                                                                                                                             masked_lm_prob, max_predictions_per_seq, vocab_words, rng),
+                                                                                                                             masked_lm_prob, max_predictions_per_seq,
+                                                                                                                             vocab_words, rng, random_seed),
                                                                                 axis=1),meta=df).compute(get=get)
 
         print("Created instances " + str(i + 1))
@@ -356,8 +357,9 @@ def create_training_instances2(input_file, output_file, tokenizer, max_seq_lengt
 
 
 def create_instances_from_document2(
-    df, row, max_seq_length, short_seq_prob,
-    masked_lm_prob, max_predictions_per_seq, vocab_words, rng):
+        df, row, max_seq_length, short_seq_prob,
+        masked_lm_prob, max_predictions_per_seq,
+        vocab_words, rng, random_seed):
     """Creates `TrainingInstance`s for a single document."""
     document_index = row.name
     document = row.tokens
@@ -389,16 +391,14 @@ def create_instances_from_document2(
         is_random_next = False
         if len(document) - i >= target_seq_length:
             a_end = rng.randint(i + min_sent_length, i + target_seq_length - min_sent_length)
-            tokens_a = document[i:a_end]
+            tokens_a = document[i:a_end+1]
 
             if rng.random() < 0.5:
                 is_random_next = True
                 while True:
-                    rand_index = rng.randint(0,len(df) - 1)
-                    if rand_index != document_index:
-                        rand_document = df.iloc[rand_index].tokens
-                        if len(rand_document) >= min_sent_length:
-                            break
+                    rand_document = df[df.index != document_index].sample(n=1, random_state=random_seed).tokens.iloc[0]
+                    if len(rand_document) >= min_sent_length:
+                        break
 
                 if len(rand_document) > target_seq_length - len(tokens_a):
                     b_start = rng.randint(0,len(rand_document) - target_seq_length + len(tokens_a))
@@ -419,11 +419,9 @@ def create_instances_from_document2(
             tokens_a = document[i:]
             is_random_next = True
             while True:
-                rand_index = rng.randint(0,len(df) - 1)
-                if rand_index != document_index:
-                    rand_document = df.iloc[rand_index].tokens
-                    if len(rand_document) >= min_sent_length:
-                        break
+                rand_document = df[df.index != document_index].sample(n=1, random_state=random_seed).tokens.iloc[0]
+                if len(rand_document) >= min_sent_length:
+                    break
 
             if len(rand_document) >= target_seq_length - len(tokens_a):
                 b_start = rng.randint(0,len(rand_document) - target_seq_length + len(tokens_a))
@@ -459,6 +457,10 @@ def create_instances_from_document2(
                 segment_ids.append(1)
         tokens.append("[SEP]")
         segment_ids.append(1)
+
+        if len(tokens) < 2*min_sent_length + 3:
+            continue
+
         (tokens,masked_lm_labels) = create_masked_lm_predictions(
             tokens, masked_lm_prob, max_predictions_per_seq, vocab_words, rng)
         instance = {"instance" : TrainingInstance(
@@ -597,7 +599,7 @@ def main():
 
     rng = random.Random(args.random_seed)
     create_training_instances2(args.input_file, args.output_file, tokenizer, args.max_seq_length, args.dupe_factor,
-                               args.short_seq_prob, args.masked_lm_prob, args.max_predictions_per_seq, rng)
+                               args.short_seq_prob, args.masked_lm_prob, args.max_predictions_per_seq, rng, args.random_seed)
 
 #    print("Now to writing")
     # write_instance_to_example_files(instances, tokenizer, args.max_seq_length,
