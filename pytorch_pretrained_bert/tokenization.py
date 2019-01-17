@@ -99,7 +99,10 @@ class BertTokenizer(object):
         """Converts a sequence of tokens into ids using the vocab."""
         ids = []
         for token in tokens:
-            ids.append(self.vocab[token])
+            try:
+                ids.append(self.vocab[token])
+            except:
+                ids.append(self.vocab["[UNK]"])
         return ids
 
     def convert_ids_to_tokens(self, ids):
