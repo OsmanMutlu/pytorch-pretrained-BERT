@@ -123,6 +123,4 @@ tensorflow_code
 
 examples/hyperpartisan/
 *~
-examples/bert_finetune.py
-examples/run_lm_finetuning.py
 .gitignore
