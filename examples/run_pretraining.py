@@ -387,7 +387,7 @@ def main():
                         best_loss = curr_loss
                         logger.info("** Saving model - Loss = " + str(best_loss) + " **")
                         model_to_save = model.module if hasattr(model, 'module') else model  # To handle multi gpu
-                        output_model_file = os.path.join(args.output_dir, "pytorch_model.bin")
+                        output_model_file = os.path.join(args.output_dir, "pytorch_model_clean.bin")
                         torch.save(model_to_save.state_dict(), output_model_file)
 
                     # del input_ids,input_mask,segment_ids,masked_lm_ids,next_sent_label,cur_loss
@@ -399,6 +399,31 @@ def main():
         # save_model = model.module if hasattr(model, 'module') else model  # To handle multi gpu
         # output_file = os.path.join(args.data_dir, "pytorch_model.bin")
         # torch.save(save_model.state_dict(), output_file)
+
+    if args.do_eval:
+        eval_dataset = BertDataset(args.eval_input_file, args.eval_input_length)
+        if args.local_rank == -1:
+            eval_sampler = RandomSampler(eval_dataset)
+        else:
+            eval_sampler = DistributedSampler(eval_dataset)
+
+        eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.train_batch_size)
+
+        model.eval()
+        bcount = 0
+        total_loss = 0.0
+        for eval_batch in eval_dataloader:
+            eval_batch = tuple(t.to(device) for t in eval_batch)
+            input_ids, input_mask, segment_ids, masked_lm_ids, next_sent_label = eval_batch
+            cur_loss = model(input_ids, segment_ids, input_mask, masked_lm_ids, next_sent_label)
+            if n_gpu > 1:
+                cur_loss = cur_loss.mean() # mean() to average on multi-gpu.
+
+            total_loss += cur_loss.item()
+            bcount += 1
+
+        curr_loss = total_loss / bcount
+        logger.info("Loss = " + str(curr_loss))
 
     # if args.do_eval:
     #     eval_examples = processor.get_dev_examples(args.data_dir)

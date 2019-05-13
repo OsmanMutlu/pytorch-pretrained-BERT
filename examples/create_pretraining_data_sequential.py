@@ -20,6 +20,7 @@ import argparse
 from dask import dataframe as dd
 from dask.multiprocessing import get
 from tqdm import tqdm
+import re
 
 from pytorch_pretrained_bert.tokenization import BertTokenizer
 
@@ -35,7 +36,7 @@ class TrainingInstance(object):
 
 def create_training_instances2(input_file, output_file, tokenizer, max_seq_length,
                                dupe_factor, short_seq_prob, masked_lm_prob,
-                               max_predictions_per_seq, rng, random_seed):
+                               max_predictions_per_seq, rng, random_seed, clean_data):
     """Create `TrainingInstance`s from raw text."""
     # Input file format:
     # (1) One sentence per line. These should ideally be actual sentences, not
@@ -53,6 +54,15 @@ def create_training_instances2(input_file, output_file, tokenizer, max_seq_lengt
     for i in range(dupe_factor):
         for _, line in enumerate(tqdm(f, desc="Creating pretraining data")):
             line = line.strip().replace("\\n", " ")
+            if clean_data:
+                line = re.sub(r"&#160;",r" ", line)
+                line = re.sub(r"\\n_{1,}\s?\\n",r"\n", line)
+                line = re.sub(r"\\n\s?\*{2,}\s?\\n",r"\n", line)
+                line = re.sub(r"&amp;",r"&", line)
+                line = re.sub(r"\\n_{1,}\s?$","", line)
+                line = re.sub(r"^_{1,}\s?\\n","", line)
+                line = re.sub(r"\\nADVERTISEMENT\s?\\n","\n", line)
+
             line = tokenizer.tokenize(line)
             instances = create_instances_from_document(line, max_seq_length, short_seq_prob,
                                                        masked_lm_prob, max_predictions_per_seq,
@@ -293,6 +303,9 @@ def main():
                         help="Output TF example file (or comma-separated list of files).")
 
     ## Other parameters
+    parser.add_argument("--clean_data",
+                        action='store_true',
+                        help="Whether to lower case the input text. Should be True for uncased models and False for cased models.")
     parser.add_argument("--max_seq_length",
                         default=128,
                         type=int,
@@ -331,7 +344,7 @@ def main():
 
     rng = random.Random(args.random_seed)
     create_training_instances2(args.input_file, args.output_file, tokenizer, args.max_seq_length, args.dupe_factor,
-                               args.short_seq_prob, args.masked_lm_prob, args.max_predictions_per_seq, rng, args.random_seed)
+                               args.short_seq_prob, args.masked_lm_prob, args.max_predictions_per_seq, rng, args.random_seed, args.clean_data)
 
 
 if __name__ == "__main__":
