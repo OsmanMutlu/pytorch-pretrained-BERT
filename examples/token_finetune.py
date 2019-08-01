@@ -173,7 +173,10 @@ def convert_examples_to_features(example, label_list, max_seq_length, tokenizer)
         # If we want to keep all wordpieces
         # tokens.extend(tokenized)
         # label_ids.extend(len(tokenized)*[label_map[example.labels[i]]])
-        tokens.append(tokenized[0])
+        if tokenized:
+            tokens.append(tokenized[0])
+        else:
+            tokens.append("[UNK]")
         # label_ids.append(label_map[example.labels[i]])
 
     # label_ids = [label_map[x] if x not in [-1, -2] else x for x in example.labels]
