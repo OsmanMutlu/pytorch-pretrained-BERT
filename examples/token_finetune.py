@@ -116,7 +116,7 @@ class EmwProcessor(DataProcessor):
 
     def get_labels(self):
         """See base class."""
-        return ["B-etime", "B-fname", "B-loc", "B-organizer", "B-participant", "B-place", "B-target", "B-trigger", "I-etime", "I-fname", "I-loc", "I-organizer", "I-participant", "I-place", "I-target", "I-trigger", "O"]
+        return ["B-etime", "B-fname", "B-organizer", "B-participant", "B-place", "B-target", "B-trigger", "I-etime", "I-fname", "I-organizer", "I-participant", "I-place", "I-target", "I-trigger", "O"]
 
     def _create_examples(self, lines):
         """Creates examples for the training and dev sets."""
@@ -797,7 +797,7 @@ def main():
         test_accuracy = accuracy(all_preds, all_label_ids)
 
         # precision, recall, f1, _ = precision_recall_fscore_support(all_label_ids, all_preds, average="macro", labels=list(range(0,num_labels)))
-        precision, recall, f1 = evaluate([idtolabel[x] for x in all_label_ids.tolist()], [idtolabel[x] for x in all_preds.tolist()])
+        precision, recall, f1 = evaluate([idtolabel[x] for x in all_label_ids.tolist()], [idtolabel[x] for x in all_preds.tolist()], verbose=True)
         mcc = matthews_corrcoef(all_label_ids, all_preds)
         result = {"test_loss": test_loss,
                   "test_accuracy": test_accuracy,
