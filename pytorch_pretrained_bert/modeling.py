@@ -32,6 +32,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 
 from .file_utils import cached_path
+from .conditional_random_field import ConditionalRandomField
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt = '%m/%d/%Y %H:%M:%S',
@@ -1028,3 +1029,40 @@ class BertForTokenClassification(PreTrainedBertModel):
             return loss, logits
         else:
             return logits
+
+# Not working yet
+# class BertCRF(PreTrainedBertModel):
+
+#     def __init__(self, config, num_labels, constraints=None, include_start_end_transitions=False):
+#         super(BertCRF, self).__init__(config)
+
+#         self.num_labels = num_labels
+#         self.bert = BertModel(config)
+#         self.dropout = nn.Dropout(config.hidden_dropout_prob)
+#         self.classifier = nn.Linear(config.hidden_size, num_labels)
+#         self.crf = ConditionalRandomField(num_labels, constraints=constraints, include_start_end_transitions=include_start_end_transitions)
+#         self.apply(self.init_bert_weights)
+
+#     def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None):
+#         sequence_output, _ = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
+#         sequence_output = self.dropout(sequence_output)
+#         logits = self.classifier(sequence_output)
+
+#         batchsize = logits.size(0)
+#         no_cls_sep = logits[input_ids != 102].view(batchsize,-1,self.num_labels) # 102 is for SEP token
+#         no_cls_sep = no_cls_sep[:,1:,:] # Get rid of [CLS]
+#         attention_mask = attention_mask[input_ids != 102].view(batchsize,-1) # 102 is for SEP token
+#         attention_mask = attention_mask[:,1:] # Get rid of [CLS]
+
+#         if labels is not None:
+#             loss_fct = CrossEntropyLoss(ignore_index=-1)
+#             labels = labels[input_ids != 102].view(batchsize,-1) # 102 is for SEP token
+#             labels = labels[:,1:] # Get rid of [CLS]
+
+#             loss = self.crf(no_cls_sep, labels, mask=attention_mask.byte())
+#             preds = self.crf.viterbi_tags(no_cls_sep, attention_mask) # Doesn't have labels for [CLS] and [SEP]. Flattened. Comes as numpy array.
+
+#             return loss, preds
+#         else:
+#             preds = self.crf.viterbi_tags(no_cls_sep, attention_mask) # Doesn't have labels for [CLS] and [SEP]. Flattened. Comes as numpy array.
+#             return preds
