@@ -32,7 +32,6 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 
 from .file_utils import cached_path
-from .conditional_random_field import ConditionalRandomField
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt = '%m/%d/%Y %H:%M:%S',
@@ -224,6 +223,57 @@ class BertSelfAttention(nn.Module):
     def forward(self, hidden_states, attention_mask):
         mixed_query_layer = self.query(hidden_states)
         mixed_key_layer = self.key(hidden_states)
+        mixed_value_layer = self.value(hidden_states)
+
+        query_layer = self.transpose_for_scores(mixed_query_layer)
+        key_layer = self.transpose_for_scores(mixed_key_layer)
+        value_layer = self.transpose_for_scores(mixed_value_layer)
+
+        # Take the dot product between "query" and "key" to get the raw attention scores.
+        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
+        # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
+        attention_scores = attention_scores + attention_mask
+
+        # Normalize the attention scores to probabilities.
+        attention_probs = nn.Softmax(dim=-1)(attention_scores)
+
+        # This is actually dropping out entire tokens to attend to, which might
+        # seem a bit unusual, but is taken from the original Transformer paper.
+        attention_probs = self.dropout(attention_probs)
+
+        context_layer = torch.matmul(attention_probs, value_layer)
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        context_layer = context_layer.view(*new_context_layer_shape)
+        return context_layer
+
+# Totally same except query and key layer takes our facts instead of inputs
+class Attention(nn.Module):
+    def __init__(self, config):
+        super(Attention, self).__init__()
+        if config.hidden_size % config.num_attention_heads != 0:
+            raise ValueError(
+                "The hidden size (%d) is not a multiple of the number of attention "
+                "heads (%d)" % (config.hidden_size, config.num_attention_heads))
+        self.num_attention_heads = config.num_attention_heads
+        self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
+        self.all_head_size = self.num_attention_heads * self.attention_head_size
+
+        self.query = nn.Linear(config.hidden_size, self.all_head_size)
+        self.key = nn.Linear(config.hidden_size, self.all_head_size)
+        self.value = nn.Linear(config.hidden_size, self.all_head_size)
+
+        self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
+
+    def transpose_for_scores(self, x):
+        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
+        x = x.view(*new_x_shape)
+        return x.permute(0, 2, 1, 3)
+
+    def forward(self, facts, hidden_states, attention_mask):
+        mixed_query_layer = self.query(facts)
+        mixed_key_layer = self.key(facts)
         mixed_value_layer = self.value(hidden_states)
 
         query_layer = self.transpose_for_scores(mixed_query_layer)
@@ -616,6 +666,42 @@ class BertModel(PreTrainedBertModel):
         return encoded_layers, pooled_output
 
 
+class BertModel_with_attention(PreTrainedBertModel):
+    def __init__(self, config, fact_reps=None):
+        super(BertModel_with_attention, self).__init__(config)
+        self.embeddings = BertEmbeddings(config)
+        self.encoder = BertEncoder(config)
+        self.fact_attn = Attention(config)
+        self.fact_reps = fact_reps
+        self.pooler = BertPooler(config)
+        self.apply(self.init_bert_weights)
+
+    def forward(self, input_ids, token_type_ids=None, attention_mask=None, output_all_encoded_layers=True):
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids)
+        if token_type_ids is None:
+            token_type_ids = torch.zeros_like(input_ids)
+
+        extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+
+        extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype) # fp16 compatibility
+        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+
+        embedding_output = self.embeddings(input_ids, token_type_ids)
+
+        encoded_layers = self.encoder(embedding_output,
+                                      extended_attention_mask,
+                                      output_all_encoded_layers=output_all_encoded_layers)
+        sequence_output = encoded_layers[-1]
+
+        fact_reps = self.fact_reps.expand(sequence_output.shape)
+        fact_reps = fact_reps.to(input_ids.device)
+
+        sequence_output = self.fact_attn(fact_reps, sequence_output, extended_attention_mask)
+        pooled_output = self.pooler(sequence_output)
+        return pooled_output
+
+
 class BertForPreTraining(PreTrainedBertModel):
     """BERT model with pre-training heads.
     This module comprises the BERT model followed by the two pre-training heads:
@@ -876,6 +962,28 @@ class BertForSequenceClassification(PreTrainedBertModel):
             return logits
 
 
+class BertForSequenceClassification_with_facts(PreTrainedBertModel):
+    def __init__(self, config, num_labels=2, fact_reps=None):
+        super(BertForSequenceClassification_with_facts, self).__init__(config)
+        self.num_labels = num_labels
+        self.bert = BertModel_with_attention(config, fact_reps=fact_reps)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.classifier = nn.Linear(config.hidden_size, num_labels)
+        self.apply(self.init_bert_weights)
+
+    def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None):
+        pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
+        pooled_output = self.dropout(pooled_output)
+        logits = self.classifier(pooled_output)
+
+        if labels is not None:
+            loss_fct = CrossEntropyLoss()
+            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+            return loss, logits
+        else:
+            return logits
+
+
 class BertForQuestionAnswering(PreTrainedBertModel):
     """BERT model for Question Answering (span extraction).
     This module is composed of the BERT model with a linear layer on top of
@@ -1029,40 +1137,3 @@ class BertForTokenClassification(PreTrainedBertModel):
             return loss, logits
         else:
             return logits
-
-# Not working yet
-# class BertCRF(PreTrainedBertModel):
-
-#     def __init__(self, config, num_labels, constraints=None, include_start_end_transitions=False):
-#         super(BertCRF, self).__init__(config)
-
-#         self.num_labels = num_labels
-#         self.bert = BertModel(config)
-#         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-#         self.classifier = nn.Linear(config.hidden_size, num_labels)
-#         self.crf = ConditionalRandomField(num_labels, constraints=constraints, include_start_end_transitions=include_start_end_transitions)
-#         self.apply(self.init_bert_weights)
-
-#     def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None):
-#         sequence_output, _ = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
-#         sequence_output = self.dropout(sequence_output)
-#         logits = self.classifier(sequence_output)
-
-#         batchsize = logits.size(0)
-#         no_cls_sep = logits[input_ids != 102].view(batchsize,-1,self.num_labels) # 102 is for SEP token
-#         no_cls_sep = no_cls_sep[:,1:,:] # Get rid of [CLS]
-#         attention_mask = attention_mask[input_ids != 102].view(batchsize,-1) # 102 is for SEP token
-#         attention_mask = attention_mask[:,1:] # Get rid of [CLS]
-
-#         if labels is not None:
-#             loss_fct = CrossEntropyLoss(ignore_index=-1)
-#             labels = labels[input_ids != 102].view(batchsize,-1) # 102 is for SEP token
-#             labels = labels[:,1:] # Get rid of [CLS]
-
-#             loss = self.crf(no_cls_sep, labels, mask=attention_mask.byte())
-#             preds = self.crf.viterbi_tags(no_cls_sep, attention_mask) # Doesn't have labels for [CLS] and [SEP]. Flattened. Comes as numpy array.
-
-#             return loss, preds
-#         else:
-#             preds = self.crf.viterbi_tags(no_cls_sep, attention_mask) # Doesn't have labels for [CLS] and [SEP]. Flattened. Comes as numpy array.
-#             return preds

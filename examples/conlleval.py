@@ -194,6 +194,7 @@ def get_result(correct_chunks, true_chunks, pred_chunks,
     print("accuracy: %6.2f%%; " % (100*sum_correct_counts/sum_true_counts), end='')
     print("precision: %6.2f%%; recall: %6.2f%%; FB1: %6.2f" % (prec, rec, f1))
 
+    out_json = {"Overall": list(res)}
     # for each chunk type, compute precision, recall and FB1 (default values are 0.0)
     for t in chunk_types:
         prec, rec, f1 = calc_metrics(correct_chunks[t], pred_chunks[t], true_chunks[t])
@@ -201,8 +202,9 @@ def get_result(correct_chunks, true_chunks, pred_chunks,
         print("precision: %6.2f%%; recall: %6.2f%%; FB1: %6.2f" %
                     (prec, rec, f1), end='')
         print("  %d" % pred_chunks[t])
+        out_json[t] = [prec, rec, f1]
 
-    return res
+    return res, out_json
     # you can generate LaTeX output for tables like in
     # http://cnts.uia.ac.be/conll2003/ner/example.tex
     # but I'm not implementing this
@@ -212,10 +214,20 @@ def evaluate(true_seqs, pred_seqs, verbose=False):
     (correct_chunks, true_chunks, pred_chunks,
         correct_counts, true_counts, pred_counts) = count_chunks(true_seqs, pred_seqs)
 
-    result = get_result(correct_chunks, true_chunks, pred_chunks,
-                        correct_counts, true_counts, pred_counts, verbose=verbose)
+    result, out_json = get_result(correct_chunks, true_chunks, pred_chunks,
+                                  correct_counts, true_counts, pred_counts, verbose=verbose)
 
-    return result
+    return result, out_json
+
+def evaluate2(true_seqs, pred_seqs, verbose=True):
+
+    (correct_chunks, true_chunks, pred_chunks,
+        correct_counts, true_counts, pred_counts) = count_chunks(true_seqs, pred_seqs)
+
+    result, out_json = get_result(correct_chunks, true_chunks, pred_chunks,
+                                  correct_counts, true_counts, pred_counts, verbose=verbose)
+
+    return result, out_json
 
 def evaluate_conll_file(fileIterator):
     true_seqs, pred_seqs = [], []

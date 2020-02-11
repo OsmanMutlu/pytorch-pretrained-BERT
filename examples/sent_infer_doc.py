@@ -27,7 +27,8 @@ import datetime
 from tqdm import tqdm, trange
 from pathlib import Path
 import math
-from sklearn.metrics import precision_recall_fscore_support, matthews_corrcoef, confusion_matrix
+from sklearn.metrics import precision_recall_fscore_support, matthews_corrcoef
+from nltk import sent_tokenize
 
 import numpy as np
 import pandas as pd
@@ -53,7 +54,7 @@ logger.info(PYTORCH_PRETRAINED_BERT_CACHE)
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
 
-    def __init__(self, guid, text_a, text_b=None, label=None):
+    def __init__(self, guid, text_a, text_b=None, label=None, url=None):
         """Constructs a InputExample.
 
         Args:
@@ -66,6 +67,7 @@ class InputExample(object):
             specified for train and dev examples, but not for test examples.
         """
         self.guid = guid
+        self.url = url
         self.text_a = text_a
         self.text_b = text_b
         self.label = label
@@ -74,12 +76,12 @@ class InputExample(object):
 class InputFeatures(object):
     """A single set of features of data."""
 
-    def __init__(self, input_ids, input_mask, segment_ids, label_id, guid):
+    def __init__(self, input_ids, input_mask, segment_ids, label_id, url):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
         self.label_id = label_id
-        self.guid = guid
+        self.url = url
 
 
 class DataProcessor(object):
@@ -102,84 +104,6 @@ class DataProcessor(object):
         """Reads a comma separated value file."""
         lines = pd.read_csv(input_file)
         return lines
-
-class DataProcessor2(object):
-    """Base class for data converters for sequence classification data sets."""
-
-    def get_train_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the train set."""
-        raise NotImplementedError()
-
-    def get_dev_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the dev set."""
-        raise NotImplementedError()
-
-    def get_labels(self):
-        """Gets the list of labels for this data set."""
-        raise NotImplementedError()
-
-    @classmethod
-    def _read_tsv(cls, input_file, quotechar=None):
-        """Reads a comma separated value file."""
-        lines = pd.read_csv(input_file, sep="\t", header=None, names=["text", "id", "label"])
-        return lines
-
-class DataProcessor3(object):
-    """Base class for data converters for sequence classification data sets."""
-
-    def get_train_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the train set."""
-        raise NotImplementedError()
-
-    def get_dev_examples(self, data_dir):
-        """Gets a collection of `InputExample`s for the dev set."""
-        raise NotImplementedError()
-
-    def get_labels(self):
-        """Gets the list of labels for this data set."""
-        raise NotImplementedError()
-
-    @classmethod
-    def _read_tsv(cls, input_file, quotechar=None):
-        """Reads a comma separated value file."""
-        lines = pd.read_csv(input_file, sep="\t")
-        return lines
-
-
-class HyperProcessor(DataProcessor):
-    """Processor for the Hyperpartisan data set."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.csv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "val.csv")), "dev")
-
-    def get_test_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "test.csv")), "test")
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in lines.iterrows():
-            guid = i
-            text_a = line.text
-            label = str(line.hyperpartisan)
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
-
-        return examples
 
 class EmwProcessor(DataProcessor):
     """Processor for the Emw data set."""
@@ -212,227 +136,14 @@ class EmwProcessor(DataProcessor):
             guid = i
             text_a = str(line.text)
             label = str(int(line.label))
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+            url = str(line.url)
+            if set_type == "train":
+                examples.append(InputExample(guid=guid, text_a=text_a, text_b=None, label=label, url=url))
+            else:
+                exs = [InputExample(guid=guid, text_a=sent, text_b=None, label=label, url=url) for sent in sent_tokenize(text_a)]
+                examples.extend(exs)
 
         return examples
-
-class SemProcessor(DataProcessor):
-    """Processor for the Emw data set."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.csv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "val.csv")), "dev")
-
-    def get_test_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "test.csv")), "test")
-
-    def get_labels(self):
-        """See base class."""
-#        return ["0", "1", "2"]
-        # return ['arm_mil', 'demonst', 'ind_act', 'group_clash', 'elec_pol', 'other']
-        return ['arm_mil', 'demonst', 'ind_act', 'group_clash']
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in lines.iterrows():
-            guid = i
-            text_a = str(line.text)
-            label = str(line.label)
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
-
-        return examples
-
-class PartSemProcessor(DataProcessor):
-    """Processor for the Emw data set."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.csv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "val.csv")), "dev")
-
-    def get_test_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "test.csv")), "test")
-
-    def get_labels(self):
-        """See base class."""
-        return ['halk', 'militan', 'aktivist', 'köylü', 'öğrenci', 'siyasetçi', 'profesyonel', 'işçi', 'esnaf/küçük üretici', "No"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in lines.iterrows():
-            guid = i
-            text_a = str(line.text)
-            label = str(line.label)
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
-
-        return examples
-
-class OrgSemProcessor(DataProcessor):
-    """Processor for the Emw data set."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.csv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "val.csv")), "dev")
-
-    def get_test_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "test.csv")), "test")
-
-    def get_labels(self):
-        """See base class."""
-        return ['Militant_Organization', 'Political_Party', 'Chambers_of_Professionals', 'Labor_Union', 'Grassroots_Organization', "No"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in lines.iterrows():
-            guid = i
-            text_a = str(line.text)
-            label = str(line.label)
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
-
-        return examples
-
-class SSTProcessor(DataProcessor3):
-    """Processor for the Emw data set."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "mytrain.tsv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
-
-    def get_test_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "mytest.tsv")), "test")
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in lines.iterrows():
-            guid = i
-            text_a = str(line.sentence)
-            label = str(int(line.label))
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
-
-        return examples
-
-
-class EmwProcessor2(DataProcessor):
-    """Processor for the Emw data set."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.csv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "val.csv")), "dev")
-
-    def get_test_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "test.csv")), "test")
-
-    def get_labels(self):
-        """See base class."""
-        return ["0", "1", "2"]
-#        return ["0", "1"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in lines.iterrows():
-            guid = i
-            text_a = str(line.text)
-            label = str(int(line.label))
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
-
-        return examples
-
-
-class HackProcessor(DataProcessor2):
-    """Processor for the Emw data set."""
-
-    def get_train_examples(self, data_dir):
-        """See base class."""
-        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
-
-    def get_dev_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "val.tsv")), "dev")
-
-    def get_test_examples(self, data_dir):
-        """See base class."""
-        return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "test.tsv")), "test")
-
-    def get_labels(self):
-        """See base class."""
-        return ["non-propaganda", "propaganda"]
-
-    def _create_examples(self, lines, set_type):
-        """Creates examples for the training and dev sets."""
-        examples = []
-        for (i, line) in lines.iterrows():
-            # guid = int(line.id)
-            guid = i
-            text_a = str(line.text)
-            label = str(line.label)
-            examples.append(
-                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
-
-        return examples
-
 
 def convert_examples_to_features(example, label_list, max_seq_length, tokenizer):
     """Loads a data file into a list of `InputBatch`s."""
@@ -515,7 +226,7 @@ def convert_examples_to_features(example, label_list, max_seq_length, tokenizer)
                          input_mask=input_mask,
                          segment_ids=segment_ids,
                          label_id=label_id,
-                         guid=example.guid)
+                         url=example.url)
 
 
 class HyperpartisanData(Dataset):
@@ -537,9 +248,8 @@ class HyperpartisanData(Dataset):
         input_mask = torch.tensor(feats.input_mask, dtype=torch.long)
         segment_ids = torch.tensor(feats.segment_ids, dtype=torch.long)
         label_ids = torch.tensor(feats.label_id, dtype=torch.long)
-        guids = torch.tensor(feats.guid, dtype=torch.long)
 
-        return input_ids, input_mask, segment_ids, label_ids, guids
+        return input_ids, input_mask, segment_ids, label_ids, feats.url
 
 def _truncate_seq_pair(tokens_a, tokens_b, max_length):
     """Truncates a sequence pair in place to the maximum length."""
@@ -719,56 +429,38 @@ def main():
                         default=500000,
                         type=int,
                         help="every nth iteration to do eval")
-    parser.add_argument("--error_anal",
-                        default=False,
-                        action='store_true',
-                        help="Whether to give every prediction for error analysis")
-    parser.add_argument("--conf_scores",
-                        default=False,
-                        action='store_true',
-                        help="Whether to give confusion matrix and scores as html")
 
 
     args = parser.parse_args()
 
-    multi_gpu = False
-    device = torch.device("cuda")
-    device_ids = [2,3]
-
     processors = {
-        "hyperpartisan": HyperProcessor,
         "emw": EmwProcessor,
-        "emw2": EmwProcessor2,
-        "hack": HackProcessor,
-        "sst": SSTProcessor,
-        "sem_cats": SemProcessor,
-        "part_sem_cats": PartSemProcessor,
-        "org_sem_cats": OrgSemProcessor,
     }
 
-    # if args.local_rank == -1 or args.no_cuda:
-    #     device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-    #     n_gpu = torch.cuda.device_count()
-    # else:
-    #     device = torch.device("cuda", args.local_rank)
-    #     n_gpu = 1
-    #     # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
-    #     torch.distributed.init_process_group(backend='nccl')
-    #     if args.fp16:
-    #         logger.info("16-bits training currently not supported in distributed training")
-    #         args.fp16 = False # (see https://github.com/pytorch/pytorch/pull/13496)
-    # logger.info("device %s n_gpu %d distributed training %r", device, n_gpu, bool(args.local_rank != -1))
+    if args.local_rank == -1 or args.no_cuda:
+        device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+        n_gpu = torch.cuda.device_count()
+    else:
+        device = torch.device("cuda", args.local_rank)
+        n_gpu = 1
+        # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
+        torch.distributed.init_process_group(backend='nccl')
+        if args.fp16:
+            logger.info("16-bits training currently not supported in distributed training")
+            args.fp16 = False # (see https://github.com/pytorch/pytorch/pull/13496)
+    logger.info("device %s n_gpu %d distributed training %r", device, n_gpu, bool(args.local_rank != -1))
 
-    # if args.gradient_accumulation_steps < 1:
-    #     raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
-    #                         args.gradient_accumulation_steps))
+    if args.gradient_accumulation_steps < 1:
+        raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
+                            args.gradient_accumulation_steps))
 
     args.train_batch_size = int(args.train_batch_size / args.gradient_accumulation_steps)
 
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
+    if n_gpu > 0:
+        torch.cuda.manual_seed_all(args.seed)
 
     # if not args.do_train and not args.do_eval and not args.do_test:
     #     raise ValueError("At least one of `do_train` or `do_eval` or `do_test` must be True.")
@@ -803,9 +495,10 @@ def main():
         logger.info("Model state has been loaded.")
 
     model.to(device)
-    if multi_gpu:
-        model = torch.nn.DataParallel(model, device_ids=device_ids)
-    else:
+    if args.local_rank != -1:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
+                                                          output_device=args.local_rank)
+    elif n_gpu > 1:
         model = torch.nn.DataParallel(model)
 
     # Prepare optimizer
@@ -837,9 +530,7 @@ def main():
     global_step = 0
     # best_mcc = 0.0
     # best_acc = 0.0
-    best_recall = 0.0
-    accs = []
-    asd = False
+    best_f1 = 0.0
     if args.do_train:
         logger.info("***** Running training *****")
         logger.info("  Num examples = %d", len(train_examples))
@@ -853,17 +544,17 @@ def main():
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-                batch = tuple(t.to(device) for t in batch)
-                input_ids, input_mask, segment_ids, label_ids, guids = batch
+                batch = tuple(t.to(device) for t in batch[:4]) # We don't need urls
+                input_ids, input_mask, segment_ids, label_ids = batch
                 loss, _ = model(input_ids, segment_ids, input_mask, label_ids)
-                loss = loss.mean() # mean() to average on multi-gpu.
+                if n_gpu > 1:
+                    loss = loss.mean() # mean() to average on multi-gpu.
                 if args.fp16 and args.loss_scale != 1.0:
                     # rescale loss for fp16 training
                     # see https://docs.nvidia.com/deeplearning/sdk/mixed-precision-training/index.html
                     loss = loss * args.loss_scale
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
-
                 loss.backward()
                 tr_loss += loss.item()
                 nb_tr_examples += input_ids.size(0)
@@ -888,118 +579,42 @@ def main():
                     model.zero_grad()
                     global_step += 1
 
-                if global_step % args.val_each == 0:
-                    if args.do_eval:
-                        model.eval()
-                        # total_rates = np.array([0,0,0,0])
-                        all_preds = np.array([])
-                        all_label_ids = np.array([])
-                        eval_loss, eval_accuracy = 0, 0
-                        nb_eval_steps, nb_eval_examples = 0, 0
-                        for input_ids, input_mask, segment_ids, label_ids, guids in eval_dataloader:
-                            input_ids = input_ids.to(device)
-                            input_mask = input_mask.to(device)
-                            segment_ids = segment_ids.to(device)
-                            label_ids = label_ids.to(device)
-
-                            with torch.no_grad():
-                                tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
-
-                            logits = logits.detach().cpu().numpy()
-                            label_ids = label_ids.to('cpu').numpy()
-                            tmp_eval_accuracy = accuracy(logits, label_ids)
-                            # tmp_rates = get_rates(logits, label_ids)
-
-                            eval_loss += tmp_eval_loss.mean().item()
-                            eval_accuracy += tmp_eval_accuracy
-                            # total_rates += tmp_rates
-
-                            all_preds = np.append(all_preds, np.argmax(logits, axis=1))
-                            all_label_ids = np.append(all_label_ids, label_ids)
-
-                            nb_eval_examples += input_ids.size(0)
-                            nb_eval_steps += 1
-
-                        eval_loss = eval_loss / nb_eval_steps
-                        eval_accuracy = eval_accuracy / nb_eval_examples
-
-                        precision, recall, f1, _ = precision_recall_fscore_support(all_label_ids, all_preds, average="macro", labels=list(range(0,num_labels)))
-                        mcc = matthews_corrcoef(all_preds, all_label_ids)
-                        result = {"eval_loss": eval_loss,
-                                  'tr_loss': tr_loss/nb_tr_steps,
-                                  "eval_accuracy": eval_accuracy,
-                                  "precision_macro": precision,
-                                  "recall_macro": recall,
-                                  "f1_macro": f1,
-                                  "mcc": mcc}
-
-                        # balanced_acc, f1_neg, f1_pos, mcc, _, _ = get_scores(total_rates.tolist())
-                        # result = {'eval_loss': eval_loss,
-                        #           'eval_accuracy': eval_accuracy,
-                        #           'global_step': global_step,
-                        #           'balanced_accuracy' : balanced_acc,
-                        #           'f1_neg' : f1_neg,
-                        #           'f1_pos' : f1_pos,
-                        #           'mcc' : mcc,
-                        #           'loss': tr_loss/nb_tr_steps}
-
-                        # if best_mcc < mcc:
-                        #     best_mcc = mcc
-                        # accs.append(eval_accuracy)
-                        # if best_acc < eval_accuracy:
-                        #     best_acc = eval_accuracy
-                        if best_recall < recall:
-                            best_recall = recall
-                            logger.info("Saving model...")
-                            model_to_save = model.module if hasattr(model, 'module') else model  # To handle multi gpu
-                            torch.save(model_to_save.state_dict(), args.output_file)
-
-                        for key in sorted(result.keys()):
-                            logger.info("  %s = %.4f", key, result[key])
-
-                        model.train() # back to training
-
 
             if args.do_eval:
+                eval_df = pd.DataFrame(columns=["url", "label", "pred"])
                 model.eval()
                 # total_rates = np.array([0,0,0,0])
-                all_preds = np.array([])
-                all_label_ids = np.array([])
-                eval_loss, eval_accuracy = 0, 0
                 nb_eval_steps, nb_eval_examples = 0, 0
-                for input_ids, input_mask, segment_ids, label_ids, guids in eval_dataloader:
+                for input_ids, input_mask, segment_ids, label_ids, urls in eval_dataloader:
                     input_ids = input_ids.to(device)
                     input_mask = input_mask.to(device)
                     segment_ids = segment_ids.to(device)
-                    label_ids = label_ids.to(device)
+                    # label_ids = label_ids.to(device)
 
                     with torch.no_grad():
-                        tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
+                        logits = model(input_ids, segment_ids, input_mask)
 
                     logits = logits.detach().cpu().numpy()
-                    label_ids = label_ids.to('cpu').numpy()
-                    tmp_eval_accuracy = accuracy(logits, label_ids)
-                    # tmp_rates = get_rates(logits, label_ids)
+                    preds = np.argmax(logits, axis=1)
 
-                    eval_loss += tmp_eval_loss.mean().item()
-                    eval_accuracy += tmp_eval_accuracy
-                    # total_rates += tmp_rates
+                    for pred, label, url in zip(preds,label_ids.numpy(),urls):
+                        eval_df = eval_df.append({"url":url, "label":label, "pred":pred}, ignore_index=True)
 
-                    all_preds = np.append(all_preds, np.argmax(logits, axis=1))
-                    all_label_ids = np.append(all_label_ids, label_ids)
+                eval_df["final_pred"] = 0
+                for url in eval_df.url.unique().tolist():
+                    final_pred = max(eval_df[eval_df.url == url].pred.tolist())
+                    eval_df.loc[eval_df.url == url, "final_pred"] = final_pred
 
-                    nb_eval_examples += input_ids.size(0)
-                    nb_eval_steps += 1
+                eval_df = eval_df.drop(["pred"], axis=1)
+                eval_df = eval_df.drop_duplicates()
 
-                eval_loss = eval_loss / nb_eval_steps
-                eval_accuracy = eval_accuracy / nb_eval_examples
+                nb_eval_examples += input_ids.size(0)
+                nb_eval_steps += 1
 
-                precision, recall, f1, _ = precision_recall_fscore_support(all_label_ids, all_preds, average="macro", labels=list(range(0,num_labels)))
-                mcc = matthews_corrcoef(all_preds, all_label_ids)
-                result = {"eval_loss": eval_loss,
-                          'tr_loss': tr_loss/nb_tr_steps,
-                          "eval_accuracy": eval_accuracy,
-                          "precision_macro": precision,
+                eval_df.label = eval_df.label.apply(int)
+                precision, recall, f1, _ = precision_recall_fscore_support(eval_df.label, eval_df.final_pred, average="macro", labels=list(range(0,num_labels)))
+                mcc = matthews_corrcoef(eval_df.final_pred, eval_df.label)
+                result = {"precision_macro": precision,
                           "recall_macro": recall,
                           "f1_macro": f1,
                           "mcc": mcc}
@@ -1016,8 +631,8 @@ def main():
 
                 # if best_mcc < mcc:
                 #     best_mcc = mcc
-                if best_recall < recall:
-                    best_recall = recall
+                if best_f1 < f1:
+                    best_f1 = f1
                     logger.info("Saving model...")
                     model_to_save = model.module if hasattr(model, 'module') else model  # To handle multi gpu
                     torch.save(model_to_save.state_dict(), args.output_file)
@@ -1043,11 +658,11 @@ def main():
         model = BertForSequenceClassification.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels)
         model.load_state_dict(torch.load(args.output_file))
         model.to(device)
-        if multi_gpu:
-            model = torch.nn.DataParallel(model, device_ids=device_ids)
-        else:
+        if args.local_rank != -1:
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
+                                                          output_device=args.local_rank)
+        elif n_gpu > 1:
             model = torch.nn.DataParallel(model)
-
         test_examples = processor.get_test_examples(args.data_dir)
         random.shuffle(test_examples)
         test_dataloader = DataLoader(dataset=HyperpartisanData(test_examples, label_list, args.max_seq_length, tokenizer), batch_size=args.train_batch_size)
@@ -1055,20 +670,11 @@ def main():
         logger.info("  Num examples = %d", len(test_examples))
         logger.info("  Batch size = %d", args.train_batch_size)
 
-        if args.error_anal:
-            test_df = pd.read_csv(args.data_dir + "/test.csv")
-            test_df["prediction"] = 0
-
+        test_df = pd.DataFrame(columns=["url", "label", "pred"])
         model.eval()
         # total_rates = np.array([0,0,0,0])
-        if args.error_anal:
-            all_guids = np.array([])
-
-        all_preds = np.array([])
-        all_label_ids = np.array([])
-        test_loss, test_accuracy = 0, 0
         nb_test_steps, nb_test_examples = 0, 0
-        for input_ids, input_mask, segment_ids, label_ids, guids in test_dataloader:
+        for input_ids, input_mask, segment_ids, label_ids, urls in test_dataloader:
             # with open("sst-test.tsv", "a") as f:
             #     for i in range(len(input_ids)):
             #         f.write(str(input_ids[i].numpy().tolist()) + "\t" + str(input_mask[i].numpy().tolist()) + "\t" + str(segment_ids[i].numpy().tolist()) + "\t" + str(label_ids[i].numpy().tolist()) + "\n")
@@ -1076,51 +682,30 @@ def main():
             input_ids = input_ids.to(device)
             input_mask = input_mask.to(device)
             segment_ids = segment_ids.to(device)
-            label_ids = label_ids.to(device)
+            # label_ids = label_ids.to(device)
+
 
             with torch.no_grad():
-                tmp_test_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
+                logits = model(input_ids, segment_ids, input_mask)
 
             logits = logits.detach().cpu().numpy()
-            label_ids = label_ids.to('cpu').numpy()
-            tmp_test_accuracy = accuracy(logits, label_ids)
-            # tmp_rates = get_rates(logits, label_ids)
+            preds = np.argmax(logits, axis=1)
 
-            test_loss += tmp_test_loss.mean().item()
-            test_accuracy += tmp_test_accuracy
-            # total_rates += tmp_rates
+            for pred, label, url in zip(preds,label_ids,urls):
+                test_df = test_df.append({"url":url, "label":int(label), "pred":pred}, ignore_index=True)
 
-            all_preds = np.append(all_preds, np.argmax(logits, axis=1))
-            all_label_ids = np.append(all_label_ids, label_ids)
+        test_df["final_pred"] = 0
+        for url in test_df.url.unique().tolist():
+            final_pred = max(test_df[test_df.url == url].pred.tolist())
+            test_df.loc[test_df.url == url, "final_pred"] = final_pred
 
-            if args.error_anal:
-                all_guids = np.append(all_guids, guids.numpy())
+        test_df = test_df.drop(["pred"], axis=1)
+        test_df = test_df.drop_duplicates()
 
-            nb_test_examples += input_ids.size(0)
-            nb_test_steps += 1
-
-        if args.error_anal:
-            test_df.loc[all_guids, "prediction"] = all_preds
-            test_df.to_csv(args.data_dir + "/error_analysis.csv", index=False)
-
-        test_loss = test_loss / nb_test_steps
-        test_accuracy = test_accuracy / nb_test_examples
-
-        precision, recall, f1, _ = precision_recall_fscore_support(all_label_ids, all_preds, average="macro", labels=list(range(0,num_labels)))
-        mcc = matthews_corrcoef(all_label_ids, all_preds)
-
-        if args.conf_scores:
-            conf_df = pd.DataFrame(confusion_matrix(all_label_ids, all_preds), columns=label_list)
-            conf_df.index = label_list
-            conf_df.to_html(args.data_dir + "/confusion_matrix.html")
-            scores_df = pd.DataFrame(np.array([a for a in precision_recall_fscore_support(all_label_ids, all_preds)[:-1]]).transpose(), columns=["Precision Macro", "Recall Macro", "F1 Macro"])
-            scores_df = scores_df.append({"Precision Macro":precision, "Recall Macro":recall, "F1 Macro":f1}, ignore_index=True)
-            scores_df.index = label_list + ["Total"]
-            scores_df.to_html(args.data_dir + "/scores.html")
-
-        result = {"test_loss": test_loss,
-                  "test_accuracy": test_accuracy,
-                  "precision_macro": precision,
+        test_df.label = test_df.label.apply(int)
+        precision, recall, f1, _ = precision_recall_fscore_support(test_df.label, test_df.final_pred, average="macro", labels=list(range(0,num_labels)))
+        mcc = matthews_corrcoef(test_df.final_pred, test_df.label)
+        result = {"precision_macro": precision,
                   "recall_macro": recall,
                   "f1_macro": f1,
                   "mcc": mcc}
@@ -1140,7 +725,6 @@ def main():
         for key in sorted(result.keys()):
             logger.info("  %s = %.4f", key, result[key])
 
-    print(accs)
 
 if __name__ == "__main__":
     main()

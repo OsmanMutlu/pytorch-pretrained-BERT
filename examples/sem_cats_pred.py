@@ -18,7 +18,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import sys
 import csv
 import os
 import logging
@@ -28,8 +27,7 @@ import datetime
 from tqdm import tqdm, trange
 from pathlib import Path
 import math
-from sklearn.metrics import precision_recall_fscore_support, matthews_corrcoef
-import re
+from sklearn.metrics import precision_recall_fscore_support, matthews_corrcoef, confusion_matrix
 
 import numpy as np
 import pandas as pd
@@ -38,13 +36,8 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from pytorch_pretrained_bert.tokenization import BertTokenizer
-from pytorch_pretrained_bert.modeling import BertForTokenClassification
+from pytorch_pretrained_bert.modeling import BertForSequenceClassification
 from pytorch_pretrained_bert.optimization import BertAdam
-
-from conlleval import evaluate
-from conlleval import evaluate2
-
-import ipdb
 
 logging.basicConfig(filename = '{}_log.txt'.format(datetime.datetime.now()),
                     format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -60,7 +53,7 @@ logger.info(PYTORCH_PRETRAINED_BERT_CACHE)
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
 
-    def __init__(self, guid, text_a, labels=None):
+    def __init__(self, guid, text_a, text_b=None, label=None):
         """Constructs a InputExample.
 
         Args:
@@ -74,17 +67,18 @@ class InputExample(object):
         """
         self.guid = guid
         self.text_a = text_a
-        self.labels = labels
+        self.text_b = text_b
+        self.label = label
 
 
 class InputFeatures(object):
     """A single set of features of data."""
 
-    def __init__(self, input_ids, input_mask, segment_ids, label_ids, guid):
+    def __init__(self, input_ids, input_mask, segment_ids, label_id, guid):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
-        self.label_ids = label_ids
+        self.label_id = label_id
         self.guid = guid
 
 
@@ -104,211 +98,365 @@ class DataProcessor(object):
         raise NotImplementedError()
 
     @classmethod
-    def _read_tsv(cls, input_file):
+    def _read_tsv(cls, input_file, quotechar=None):
         """Reads a comma separated value file."""
-        with open(input_file, "r", encoding="utf-8") as f:
-            lines = f.read().splitlines()
-
-        lines = [line.strip().split("\t") for line in lines]
+        lines = pd.read_csv(input_file)
         return lines
 
+class DataProcessor2(object):
+    """Base class for data converters for sequence classification data sets."""
+
+    def get_train_examples(self, data_dir):
+        """Gets a collection of `InputExample`s for the train set."""
+        raise NotImplementedError()
+
+    def get_dev_examples(self, data_dir):
+        """Gets a collection of `InputExample`s for the dev set."""
+        raise NotImplementedError()
+
+    def get_labels(self):
+        """Gets the list of labels for this data set."""
+        raise NotImplementedError()
+
+    @classmethod
+    def _read_tsv(cls, input_file, quotechar=None):
+        """Reads a comma separated value file."""
+        lines = pd.read_csv(input_file, sep="\t", header=None, names=["text", "id", "label"])
+        return lines
+
+class DataProcessor3(object):
+    """Base class for data converters for sequence classification data sets."""
+
+    def get_train_examples(self, data_dir):
+        """Gets a collection of `InputExample`s for the train set."""
+        raise NotImplementedError()
+
+    def get_dev_examples(self, data_dir):
+        """Gets a collection of `InputExample`s for the dev set."""
+        raise NotImplementedError()
+
+    def get_labels(self):
+        """Gets the list of labels for this data set."""
+        raise NotImplementedError()
+
+    @classmethod
+    def _read_tsv(cls, input_file, quotechar=None):
+        """Reads a comma separated value file."""
+        lines = pd.read_csv(input_file, sep="\t")
+        return lines
+
+
+class HyperProcessor(DataProcessor):
+    """Processor for the Hyperpartisan data set."""
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.csv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "val.csv")), "dev")
+
+    def get_test_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "test.csv")), "test")
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in lines.iterrows():
+            guid = i
+            text_a = line.text
+            label = str(line.hyperpartisan)
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+
+        return examples
+
 class EmwProcessor(DataProcessor):
-    """Processor for the Hyperpartisan data set."""
+    """Processor for the Emw data set."""
 
-    def get_examples(self, input_file):
+    def get_train_examples(self, data_dir):
         """See base class."""
-        logger.info("LOOKING AT {}".format(input_file))
-        return self._create_examples(self._read_tsv(input_file))
+        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.csv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "val.csv")), "dev")
+
+    def get_test_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "test.csv")), "test")
 
     def get_labels(self):
         """See base class."""
-        # return ["B-etime", "B-fname", "B-loc", "B-organizer", "B-participant", "B-place", "B-target", "B-trigger", "I-etime", "I-fname", "I-loc", "I-organizer", "I-participant", "I-place", "I-target", "I-trigger", "O"]
-        return ["B-etime", "B-fname", "B-organizer", "B-participant", "B-place", "B-target", "B-trigger", "I-etime", "I-fname", "I-organizer", "I-participant", "I-place", "I-target", "I-trigger", "O"]
+#        return ["0", "1", "2"]
+        return ["0", "1"]
 
-    def _create_examples(self, lines):
+    def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
-#        self.label_list = lines.label.unique().tolist()
         examples = []
-        words = []
-        labels = []
-        j = 0
-        for (i, line) in enumerate(lines):
-            guid = j
-            if line[0] == "SAMPLE_START":
-                words.append("[CLS]")
-                labels.append(-1)
-            elif line[0] == "[SEP]":
-                # Since we may have more than two sentences in a sample, we can not assign the third sentences tokens segment ids
-                # words.append("[PAD]")
-                # labels.append(-1)
-                continue
-            elif line[0] == "":
-                examples.append(InputExample(guid=guid, text_a=words, labels=labels))
-                j += 1
-                words = []
-                labels = []
-                continue
-            elif line[0] in ["\x91", "\x92", "\x97"]:
-                continue
-            else:
-                words.append(line[0])
-                labels.append(line[1])
+        for (i, line) in lines.iterrows():
+            guid = i
+            text_a = str(line.text)
+            label = str(int(line.label))
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
 
         return examples
 
-class TriggerProcessor(DataProcessor):
-    """Processor for the Hyperpartisan data set."""
+class SemProcessor(DataProcessor):
+    """Processor for the Emw data set."""
 
-    def get_examples(self, input_file):
+    def get_train_examples(self, data_dir):
         """See base class."""
-        logger.info("LOOKING AT {}".format(input_file))
-        return self._create_examples(self._read_tsv(input_file))
+        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.csv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "val.csv")), "dev")
+
+    def get_test_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "test.csv")), "test")
 
     def get_labels(self):
         """See base class."""
-        return ["B-trigger", "I-trigger", "O"]
+#        return ["0", "1", "2"]
+        # return ['arm_mil', 'demonst', 'ind_act', 'group_clash', 'elec_pol', 'other']
+        return ['arm_mil', 'demonst', 'ind_act', 'group_clash']
 
-    def _create_examples(self, lines):
+    def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
-#        self.label_list = lines.label.unique().tolist()
         examples = []
-        words = []
-        labels = []
-        j = 0
-        for (i, line) in enumerate(lines):
-            guid = j
-            if line[0] == "SAMPLE_START":
-                words.append("[CLS]")
-                labels.append(-1)
-            elif line[0] == "[SEP]":
-                # Since we may have more than two sentences in a sample, we can not assign the third sentences tokens segment ids
-                # words.append("[PAD]")
-                # labels.append(-1)
-                continue
-            elif line[0] == "":
-                examples.append(InputExample(guid=guid, text_a=words, labels=labels))
-                j += 1
-                words = []
-                labels = []
-                continue
-            elif line[0] in ["\x91", "\x92", "\x97"]:
-                continue
-            else:
-                words.append(line[0])
-                labels.append(line[1])
+        for (i, line) in lines.iterrows():
+            guid = i
+            text_a = str(line.text)
+            label = str(line.label)
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
 
         return examples
 
-class SemanticProcessor(DataProcessor):
-    """Processor for the Hyperpartisan data set."""
+class PartSemProcessor(DataProcessor):
+    """Processor for the Emw data set."""
 
-    def get_examples(self, input_file):
+    def get_train_examples(self, data_dir):
         """See base class."""
-        logger.info("LOOKING AT {}".format(input_file))
-        return self._create_examples(self._read_tsv(input_file))
+        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.csv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "val.csv")), "dev")
+
+    def get_test_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "test.csv")), "test")
 
     def get_labels(self):
         """See base class."""
-        return ["B-demonst", "B-ind_act", "B-group_clash", "B-arm_mil", "B-elec_pol", "B-other", "I-demonst", "I-ind_act", "I-group_clash", "I-arm_mil", "I-elec_pol", "I-other", "O"]
+        return ['halk', 'militan', 'aktivist', 'köylü', 'öğrenci', 'siyasetçi', 'profesyonel', 'işçi', 'esnaf/küçük üretici', "No"]
 
-    def _create_examples(self, lines):
+    def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
-#        self.label_list = lines.label.unique().tolist()
         examples = []
-        words = []
-        labels = []
-        j = 0
-        for (i, line) in enumerate(lines):
-            guid = j
-            if line[0] == "SAMPLE_START":
-                words.append("[CLS]")
-                labels.append(-1)
-            elif line[0] == "[SEP]":
-                # Since we may have more than two sentences in a sample, we can not assign the third sentences tokens segment ids
-                # words.append("[PAD]")
-                # labels.append(-1)
-                continue
-            elif line[0] == "":
-                examples.append(InputExample(guid=guid, text_a=words, labels=labels))
-                j += 1
-                words = []
-                labels = []
-                continue
-            elif line[0] in ["\x91", "\x92", "\x97"]:
-                continue
-            else:
-                words.append(line[0])
-                labels.append(line[1])
+        for (i, line) in lines.iterrows():
+            guid = i
+            text_a = str(line.text)
+            label = str(line.label)
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+
+        return examples
+
+class OrgSemProcessor(DataProcessor):
+    """Processor for the Emw data set."""
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.csv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "val.csv")), "dev")
+
+    def get_test_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "test.csv")), "test")
+
+    def get_labels(self):
+        """See base class."""
+        return ['Militant_Organization', 'Political_Party', 'Chambers_of_Professionals', 'Labor_Union', 'Grassroots_Organization', "No"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in lines.iterrows():
+            guid = i
+            text_a = str(line.text)
+            label = str(line.label)
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+
+        return examples
+
+class SSTProcessor(DataProcessor3):
+    """Processor for the Emw data set."""
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "mytrain.tsv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_test_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "mytest.tsv")), "test")
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in lines.iterrows():
+            guid = i
+            text_a = str(line.sentence)
+            label = str(int(line.label))
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
 
         return examples
 
 
-def convert_examples_to_features(example, label_list, max_seq_length, tokenizer, tokenization_fix=True, experiment=False):
+class EmwProcessor2(DataProcessor):
+    """Processor for the Emw data set."""
 
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.csv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.csv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "val.csv")), "dev")
+
+    def get_test_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "test.csv")), "test")
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1", "2"]
+#        return ["0", "1"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in lines.iterrows():
+            guid = i
+            text_a = str(line.text)
+            label = str(int(line.label))
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+
+        return examples
+
+
+class HackProcessor(DataProcessor2):
+    """Processor for the Emw data set."""
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "val.tsv")), "dev")
+
+    def get_test_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "test.tsv")), "test")
+
+    def get_labels(self):
+        """See base class."""
+        return ["non-propaganda", "propaganda"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in lines.iterrows():
+            # guid = int(line.id)
+            guid = i
+            text_a = str(line.text)
+            label = str(line.label)
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
+
+        return examples
+
+
+def convert_examples_to_features(example, label_list, max_seq_length, tokenizer):
     """Loads a data file into a list of `InputBatch`s."""
     label_map = {}
     for (i, label) in enumerate(label_list):
         label_map[label] = i
 
-    # label_map["X"] = len(label_list) # for wordpieces
+    features = []
 
-    tokens = []
-    label_ids = []
-    # words = example.text_a
+    tokens_a = tokenizer.tokenize(example.text_a)
 
-    for (i, word) in enumerate(example.text_a):
-        # if word == "[SEP]":
-        #     continue
-        if word == "[CLS]":
-            tokens.append(word)
-            if tokenization_fix:
-                label_ids.append(-1)
+    tokens_b = None
+    if example.text_b:
+        tokens_b = tokenizer.tokenize(example.text_b)
 
-            continue
-
-        # logger.info(word)
-        tokenized = tokenizer.tokenize(word)
-        # logger.info(tokenized)
-        # logger.info("--------")
-
-        # NOTE : If word is a unique name such as place names, make it unknown
-        # if len(tokenized) > 0:
-        #     if re.search(r"^[A-Z]", word):
-        #         tokens.append("[UNK]")
-        #     else:
-        #         tokens.append(tokenized[0])
-        # else:
-        #     tokens.append("[UNK]")
-
-        if not tokenization_fix:
-            try:
-                tokens.append(tokenized[0])
-            except:
-                tokens.append("[UNK]")
-
-        else:
-            # NOTE : If we want to keep all wordpieces
-            label_ids.append(label_map[example.labels[i]])
-            if len(tokenized) == 1:
-                tokens.extend(tokenized)
-            elif len(tokenized) > 1:
-                if experiment and re.search("^[A-Z]", word): # if the word starts with capital letter
-                    tokens.append("[unused0]")
-                    continue
-
-                tokens.extend(tokenized)
-                label_ids.extend([-1]*(len(tokenized) - 1)) # These will be masked when calculating loss
-            else:
-                tokens.append("[UNK]")
-
-
-    if not tokenization_fix:
-        label_ids = [label_map[x] if x != -1 else x for x in example.labels]
-
-    if len(tokens) > max_seq_length - 1:
-        tokens = tokens[0:(max_seq_length - 1)]
-        label_ids = label_ids[0:(max_seq_length - 1)]
-        # words = example.text_a[0:(max_seq_length - 1)]
+    if tokens_b:
+        # Modifies `tokens_a` and `tokens_b` in place so that the total
+        # length is less than the specified length.
+        # Account for [CLS], [SEP], [SEP] with "- 3"
+        _truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3)
+    else:
+        # Account for [CLS] and [SEP] with "- 2"
+        if len(tokens_a) > max_seq_length - 2:
+            tokens_a = tokens_a[0:(max_seq_length - 2)]
 
     # The convention in BERT is:
     # (a) For sequence pairs:
@@ -328,12 +476,22 @@ def convert_examples_to_features(example, label_list, max_seq_length, tokenizer,
     # For classification tasks, the first vector (corresponding to [CLS]) is
     # used as as the "sentence vector". Note that this only makes sense because
     # the entire model is fine-tuned.
-
-    # We insert in case that length was bigger than max_seq_length
+    tokens = []
+    segment_ids = []
+    tokens.append("[CLS]")
+    segment_ids.append(0)
+    for token in tokens_a:
+        tokens.append(token)
+        segment_ids.append(0)
     tokens.append("[SEP]")
-    label_ids.append(-1)
+    segment_ids.append(0)
 
-    segment_ids = [0] * len(tokens)
+    if tokens_b:
+        for token in tokens_b:
+            tokens.append(token)
+            segment_ids.append(1)
+        tokens.append("[SEP]")
+        segment_ids.append(1)
 
 #    tokens = [token for token in tokens if token in tokenizer.vocab.keys() else "[UNK]"]
     input_ids = tokenizer.convert_tokens_to_ids(tokens)
@@ -347,17 +505,16 @@ def convert_examples_to_features(example, label_list, max_seq_length, tokenizer,
         input_ids.append(0)
         input_mask.append(0)
         segment_ids.append(0)
-        label_ids.append(-1)
 
     assert len(input_ids) == max_seq_length
     assert len(input_mask) == max_seq_length
     assert len(segment_ids) == max_seq_length
-    assert len(label_ids) == max_seq_length
 
+    label_id = label_map[example.label]
     return InputFeatures(input_ids=input_ids,
                          input_mask=input_mask,
                          segment_ids=segment_ids,
-                         label_ids=label_ids,
+                         label_id=label_id,
                          guid=example.guid)
 
 
@@ -379,7 +536,7 @@ class HyperpartisanData(Dataset):
         input_ids = torch.tensor(feats.input_ids, dtype=torch.long)
         input_mask = torch.tensor(feats.input_mask, dtype=torch.long)
         segment_ids = torch.tensor(feats.segment_ids, dtype=torch.long)
-        label_ids = torch.tensor(feats.label_ids, dtype=torch.long)
+        label_ids = torch.tensor(feats.label_id, dtype=torch.long)
         guids = torch.tensor(feats.guid, dtype=torch.long)
 
         return input_ids, input_mask, segment_ids, label_ids, guids
@@ -400,8 +557,9 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
         else:
             tokens_b.pop()
 
-def accuracy(outputs, labels):
-    return np.sum(outputs == labels)/len(labels)
+def accuracy(out, labels):
+    outputs = np.argmax(out, axis=1)
+    return np.sum(outputs == labels)
 
 def get_rates(out, labels):
     outputs = np.argmax(out, axis=1)
@@ -464,6 +622,11 @@ def main():
     parser = argparse.ArgumentParser()
 
     ## Required parameters
+    parser.add_argument("--data_dir",
+                        default=None,
+                        type=str,
+                        required=True,
+                        help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
     parser.add_argument("--bert_model", default=None, type=str, required=True,
                         help="Bert pre-trained model selected in the list: bert-base-uncased, "
                              "bert-large-uncased, bert-base-cased, bert-base-multilingual, bert-base-chinese.")
@@ -492,26 +655,14 @@ def main():
                         default=False,
                         action='store_true',
                         help="Whether to run training.")
-    parser.add_argument("--train_file",
-                        default="",
-                        type=str,
-                        help="The path of train file.")
     parser.add_argument("--do_eval",
                         default=False,
                         action='store_true',
                         help="Whether to run eval on the dev set.")
-    parser.add_argument("--dev_file",
-                        default="",
-                        type=str,
-                        help="The path of eval file.")
     parser.add_argument("--do_test",
                         default=False,
                         action='store_true',
                         help="Whether to run eval on the test set.")
-    parser.add_argument("--test_file",
-                        default="",
-                        type=str,
-                        help="The path of test file.")
     parser.add_argument("--train_batch_size",
                         default=32,
                         type=int,
@@ -568,48 +719,33 @@ def main():
                         default=500000,
                         type=int,
                         help="every nth iteration to do eval")
-    parser.add_argument('--use_crf',
-                        default=False,
-                        action='store_true',
-                        help="Whether to use CRF layer at the end.")
-    parser.add_argument('--error_anal',
-                        default=False,
-                        action='store_true',
-                        help="Whether to store error analysis on test set.")
-    parser.add_argument('--scores_matrix',
-                        default=False,
-                        action='store_true',
-                        help="Whether to store scores.")
 
 
     args = parser.parse_args()
 
-    multi_gpu = True
-    device = torch.device("cuda:5")
-    device_ids = [5, 6, 7]
-    length_fix = True
-    # If you want to change these two, you must change them in convert_examples_to_features function
-    tokenization_fix = True
-    experiment = False
-
     processors = {
+        "hyperpartisan": HyperProcessor,
         "emw": EmwProcessor,
-        "trigger": TriggerProcessor,
-        "semantic": SemanticProcessor,
+        "emw2": EmwProcessor2,
+        "hack": HackProcessor,
+        "sst": SSTProcessor,
+        "sem_cats": SemProcessor,
+        "part_sem_cats": PartSemProcessor,
+        "org_sem_cats": OrgSemProcessor,
     }
 
-    # if args.local_rank == -1 or args.no_cuda:
-    #     device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-    #     n_gpu = torch.cuda.device_count()
-    # else:
-    #     device = torch.device("cuda", args.local_rank)
-    #     n_gpu = 1
-    #     # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
-    #     torch.distributed.init_process_group(backend='nccl')
-    #     if args.fp16:
-    #         logger.info("16-bits training currently not supported in distributed training")
-    #         args.fp16 = False # (see https://github.com/pytorch/pytorch/pull/13496)
-    # logger.info("device %s n_gpu %d distributed training %r", device, n_gpu, bool(args.local_rank != -1))
+    if args.local_rank == -1 or args.no_cuda:
+        device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+        n_gpu = torch.cuda.device_count()
+    else:
+        device = torch.device("cuda", args.local_rank)
+        n_gpu = 1
+        # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
+        torch.distributed.init_process_group(backend='nccl')
+        if args.fp16:
+            logger.info("16-bits training currently not supported in distributed training")
+            args.fp16 = False # (see https://github.com/pytorch/pytorch/pull/13496)
+    logger.info("device %s n_gpu %d distributed training %r", device, n_gpu, bool(args.local_rank != -1))
 
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
@@ -620,9 +756,8 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    # if n_gpu > 0:
-    #     torch.cuda.manual_seed_all(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
+    if n_gpu > 0:
+        torch.cuda.manual_seed_all(args.seed)
 
     # if not args.do_train and not args.do_eval and not args.do_test:
     #     raise ValueError("At least one of `do_train` or `do_eval` or `do_test` must be True.")
@@ -637,96 +772,31 @@ def main():
         raise ValueError("Task not found: %s" % (task_name))
 
     processor = processors[task_name]()
+    label_list = processor.get_labels()
 
     tokenizer = BertTokenizer.from_pretrained(args.bert_tokenizer)
-
-    label_list = processor.get_labels()
 
     train_examples = None
     num_train_steps = None
     if args.do_train:
-        train_examples = processor.get_examples(args.train_file)
+        train_examples = processor.get_train_examples(args.data_dir)
         random.shuffle(train_examples)
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
-        train_dataloader = DataLoader(dataset=HyperpartisanData(train_examples, label_list, args.max_seq_length, tokenizer), batch_size=args.train_batch_size)
-
-    if args.do_eval:
-        eval_examples = processor.get_examples(args.dev_file)
-        eval_dataloader = DataLoader(dataset=HyperpartisanData(eval_examples, label_list, args.max_seq_length, tokenizer), batch_size=args.train_batch_size)
-
-    if args.do_test:
-        test_examples = processor.get_examples(args.test_file)
-        test_dataloader = DataLoader(dataset=HyperpartisanData(test_examples, label_list, args.max_seq_length, tokenizer), batch_size=args.train_batch_size)
-
-
-    # NOTE : Tokenization of every word in dataset
-    # tokenized_df = pd.DataFrame(columns=["word", "tokens"])
-    # for ex in train_examples:
-    #     for word in ex.text_a:
-    #         if len(tokenized_df[tokenized_df.word == word]) > 0:
-    #             continue
-
-    #         tokenized = tokenizer.tokenize(word)
-
-    #         if len(tokenized) > 0:
-    #             tokenized_df = tokenized_df.append({"word":word, "tokens":tokenized}, ignore_index=True)
-    #         else:
-    #             tokenized_df = tokenized_df.append({"word":word, "tokens":["UNK"]}, ignore_index=True)
-
-    # for ex in eval_examples:
-    #     for word in ex.text_a:
-    #         if len(tokenized_df[tokenized_df.word == word]) > 0:
-    #             continue
-
-    #         tokenized = tokenizer.tokenize(word)
-
-    #         if len(tokenized) > 0:
-    #             tokenized_df = tokenized_df.append({"word":word, "tokens":tokenized}, ignore_index=True)
-    #         else:
-    #             tokenized_df = tokenized_df.append({"word":word, "tokens":["UNK"]}, ignore_index=True)
-
-    # for ex in test_examples:
-    #     for word in ex.text_a:
-    #         if len(tokenized_df[tokenized_df.word == word]) > 0:
-    #             continue
-
-    #         tokenized = tokenizer.tokenize(word)
-
-    #         if len(tokenized) > 0:
-    #             tokenized_df = tokenized_df.append({"word":word, "tokens":tokenized}, ignore_index=True)
-    #         else:
-    #             tokenized_df = tokenized_df.append({"word":word, "tokens":["UNK"]}, ignore_index=True)
-
-    # tokenized_df.to_json("tokenized.json", orient="records", lines=True, force_ascii=False)
-    # sys.exit()
-
 
     # Prepare model
     num_labels = len(label_list)
-    constraints = [] # (from,to)
-    if args.use_crf:
-        I_list = [i for i,v in enumerate(label_list) if "I-" in v]
-        for i,v in enumerate(I_list): # For all "I-"s constraint all other "I-"s
-            constraints.extend([(i,j) for j in I_list[:i] + I_list[i+1:]])
-
-        constraints.extend([(len(label_list)-1,i) for i in I_list]) # last element is "O".
-        # model = BertCRF.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels, constraints=constraints, include_start_end_transitions=False)
-        model = BertForTokenClassification.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels)
-    else:
-        model = BertForTokenClassification.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels)
-
+    model = BertForSequenceClassification.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels)
     if args.model_load != "":
-        model.load_state_dict(torch.load(args.model_load))
+        model.load_state_dict(torch.load(args.model_load, map_location="cpu"))
         logger.info("Model state has been loaded.")
 
     model.to(device)
-
-    if multi_gpu:
-        model = torch.nn.DataParallel(model, device_ids=device_ids)
-    else:
-        if device != torch.device("cpu"):
-            model = torch.nn.DataParallel(model)
+    if args.local_rank != -1:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
+                                                          output_device=args.local_rank)
+    elif n_gpu > 1:
+        model = torch.nn.DataParallel(model)
 
     # Prepare optimizer
     if args.fp16:
@@ -748,21 +818,25 @@ def main():
                          t_total=num_train_steps)
 
 
-    idtolabel = {}
-    for (i, label) in enumerate(label_list):
-        idtolabel[i] = label
 
-
-
+    if args.do_eval:
+        eval_examples = processor.get_dev_examples(args.data_dir)
+        random.shuffle(eval_examples)
+        eval_dataloader = DataLoader(dataset=HyperpartisanData(eval_examples, label_list, args.max_seq_length, tokenizer), batch_size=args.train_batch_size)
 
     global_step = 0
     # best_mcc = 0.0
+    # best_acc = 0.0
     best_f1 = 0.0
+    accs = []
+    asd = False
     if args.do_train:
         logger.info("***** Running training *****")
         logger.info("  Num examples = %d", len(train_examples))
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num steps = %d", num_train_steps)
+
+        train_dataloader = DataLoader(dataset=HyperpartisanData(train_examples, label_list, args.max_seq_length, tokenizer), batch_size=args.train_batch_size)
 
         model.train()
         for epoch_num in trange(int(args.num_train_epochs), desc="Epoch"):
@@ -770,16 +844,9 @@ def main():
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch = tuple(t.to(device) for t in batch)
-                input_ids, input_mask, segment_ids, label_ids, guids = batch
-
-                if args.use_crf:
-                    crf_label_ids = label_ids.clone()
-                    crf_label_ids[crf_label_ids == -1] = num_labels - 1 # Make -1's last label. This doesn't affect score, because these are masked.
-                    loss, _ = model(input_ids, segment_ids, input_mask, crf_label_ids)
-                else:
-                    loss, _ = model(input_ids, segment_ids, input_mask, label_ids)
-
-                if multi_gpu or device == torch.device("cuda"):
+                input_ids, input_mask, segment_ids, label_ids = batch
+                loss, _ = model(input_ids, segment_ids, input_mask, label_ids)
+                if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
                 if args.fp16 and args.loss_scale != 1.0:
                     # rescale loss for fp16 training
@@ -819,53 +886,41 @@ def main():
                         all_label_ids = np.array([])
                         eval_loss, eval_accuracy = 0, 0
                         nb_eval_steps, nb_eval_examples = 0, 0
-                        for input_ids, input_mask, segment_ids, label_ids, guids in eval_dataloader:
+                        for input_ids, input_mask, segment_ids, label_ids in eval_dataloader:
                             input_ids = input_ids.to(device)
                             input_mask = input_mask.to(device)
                             segment_ids = segment_ids.to(device)
                             label_ids = label_ids.to(device)
 
                             with torch.no_grad():
-                                if args.use_crf:
-                                    crf_label_ids = label_ids.clone()
-                                    crf_label_ids[crf_label_ids == -1] = num_labels - 1 # Make -1's last label. This doesn't affect score, because these are masked.
-                                    tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, crf_label_ids)
-                                else:
-                                    tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
+                                tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
 
+                            logits = logits.detach().cpu().numpy()
                             label_ids = label_ids.to('cpu').numpy()
-
-                            # logger.info(logits)
+                            tmp_eval_accuracy = accuracy(logits, label_ids)
+                            # tmp_rates = get_rates(logits, label_ids)
 
                             eval_loss += tmp_eval_loss.mean().item()
+                            eval_accuracy += tmp_eval_accuracy
+                            # total_rates += tmp_rates
 
-                            if not args.use_crf:
-                                logits = logits.detach().cpu().numpy()
-                                logits = np.argmax(logits, axis=-1).reshape(-1)
+                            all_preds = np.append(all_preds, np.argmax(logits, axis=1))
+                            all_label_ids = np.append(all_label_ids, label_ids)
 
-                            label_ids = label_ids.reshape(-1)
-
-                            # logger.info(logits)
-                            if args.use_crf:
-                                all_preds = np.append(all_preds, logits)
-                            else:
-                                all_preds = np.append(all_preds, logits[label_ids != -1])
-
-                            all_label_ids = np.append(all_label_ids, label_ids[label_ids != -1])
-
+                            nb_eval_examples += input_ids.size(0)
                             nb_eval_steps += 1
 
                         eval_loss = eval_loss / nb_eval_steps
-                        eval_accuracy = accuracy(all_preds, all_label_ids)
+                        eval_accuracy = eval_accuracy / nb_eval_examples
 
-                        # precision, recall, f1, _ = precision_recall_fscore_support(all_label_ids, all_preds, average="macro", labels=list(range(0,num_labels)))
-                        (precision, recall, f1), _ = evaluate([idtolabel[x] for x in all_label_ids.tolist()], [idtolabel[x] for x in all_preds.tolist()])
+                        precision, recall, f1, _ = precision_recall_fscore_support(all_label_ids, all_preds, average="macro", labels=list(range(0,num_labels)))
                         mcc = matthews_corrcoef(all_preds, all_label_ids)
                         result = {"eval_loss": eval_loss,
+                                  'tr_loss': tr_loss/nb_tr_steps,
                                   "eval_accuracy": eval_accuracy,
-                                  "precision": precision,
-                                  "recall": recall,
-                                  "f1": f1,
+                                  "precision_macro": precision,
+                                  "recall_macro": recall,
+                                  "f1_macro": f1,
                                   "mcc": mcc}
 
                         # balanced_acc, f1_neg, f1_pos, mcc, _, _ = get_scores(total_rates.tolist())
@@ -880,6 +935,9 @@ def main():
 
                         # if best_mcc < mcc:
                         #     best_mcc = mcc
+                        # accs.append(eval_accuracy)
+                        # if best_acc < eval_accuracy:
+                        #     best_acc = eval_accuracy
                         if best_f1 < f1:
                             best_f1 = f1
                             logger.info("Saving model...")
@@ -899,50 +957,41 @@ def main():
                 all_label_ids = np.array([])
                 eval_loss, eval_accuracy = 0, 0
                 nb_eval_steps, nb_eval_examples = 0, 0
-                for input_ids, input_mask, segment_ids, label_ids, guids in eval_dataloader:
+                for input_ids, input_mask, segment_ids, label_ids in eval_dataloader:
                     input_ids = input_ids.to(device)
                     input_mask = input_mask.to(device)
                     segment_ids = segment_ids.to(device)
                     label_ids = label_ids.to(device)
 
                     with torch.no_grad():
-                        if args.use_crf:
-                            crf_label_ids = label_ids.clone()
-                            crf_label_ids[crf_label_ids == -1] = num_labels - 1 # Make -1's last label. This doesn't affect score, because these are masked.
-                            tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, crf_label_ids)
-                        else:
-                            tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
+                        tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
 
+                    logits = logits.detach().cpu().numpy()
                     label_ids = label_ids.to('cpu').numpy()
-
-                    if not args.use_crf:
-                        logits = logits.detach().cpu().numpy()
-                        logits = np.argmax(logits, axis=-1).reshape(-1)
-
-                    label_ids = label_ids.reshape(-1)
-
-                    if args.use_crf:
-                        all_preds = np.append(all_preds, logits)
-                    else:
-                        all_preds = np.append(all_preds, logits[label_ids != -1])
-
-                    all_label_ids = np.append(all_label_ids, label_ids[label_ids != -1])
+                    tmp_eval_accuracy = accuracy(logits, label_ids)
+                    # tmp_rates = get_rates(logits, label_ids)
 
                     eval_loss += tmp_eval_loss.mean().item()
+                    eval_accuracy += tmp_eval_accuracy
+                    # total_rates += tmp_rates
 
+                    all_preds = np.append(all_preds, np.argmax(logits, axis=1))
+                    all_label_ids = np.append(all_label_ids, label_ids)
+
+                    nb_eval_examples += input_ids.size(0)
                     nb_eval_steps += 1
 
                 eval_loss = eval_loss / nb_eval_steps
-                eval_accuracy = accuracy(all_preds, all_label_ids)
+                eval_accuracy = eval_accuracy / nb_eval_examples
 
-                # precision, recall, f1, _ = precision_recall_fscore_support(all_label_ids, all_preds, average="macro", labels=list(range(0,num_labels)))
-                (precision, recall, f1), _ = evaluate([idtolabel[x] for x in all_label_ids.tolist()], [idtolabel[x] for x in all_preds.tolist()])
+                precision, recall, f1, _ = precision_recall_fscore_support(all_label_ids, all_preds, average="macro", labels=list(range(0,num_labels)))
                 mcc = matthews_corrcoef(all_preds, all_label_ids)
                 result = {"eval_loss": eval_loss,
+                          'tr_loss': tr_loss/nb_tr_steps,
                           "eval_accuracy": eval_accuracy,
-                          "precision": precision,
-                          "recall": recall,
-                          "f1": f1,
+                          "precision_macro": precision,
+                          "recall_macro": recall,
+                          "f1_macro": f1,
                           "mcc": mcc}
 
                 # balanced_acc, f1_neg, f1_pos, mcc, _, _ = get_scores(total_rates.tolist())
@@ -981,39 +1030,28 @@ def main():
     #             f.write(str(input_ids[i].numpy().tolist()) + "\t" + str(input_mask[i].numpy().tolist()) + "\t" + str(segment_ids[i].numpy().tolist()) + "\t" + str(label_ids[i].numpy().tolist()) + "\n")
 
     if args.do_test:
-
-        if length_fix:
-            label_map = {}
-            for (i, label) in enumerate(label_list):
-                label_map[label] = i
-
-        if args.error_anal:
-            all_df = pd.DataFrame(columns=["words", "gold", "pred"])
-
-        if args.use_crf:
-            # model = BertCRF.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels, constraints=constraints, include_start_end_transitions=False)
-            model = BertForTokenClassification.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels)
-        else:
-            model = BertForTokenClassification.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels)
-
-        model.load_state_dict(torch.load(args.output_file))
+        model = BertForSequenceClassification.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels)
+        model.load_state_dict(torch.load(args.output_file, map_location="cpu"))
         model.to(device)
-        if multi_gpu:
-            model = torch.nn.DataParallel(model, device_ids=device_ids)
-        else:
-            if device != torch.device("cpu"):
-                model = torch.nn.DataParallel(model)
-
+        if args.local_rank != -1:
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
+                                                          output_device=args.local_rank)
+        elif n_gpu > 1:
+            model = torch.nn.DataParallel(model)
+        test_examples = processor.get_test_examples(args.data_dir)
+        random.shuffle(test_examples)
+        test_dataloader = DataLoader(dataset=HyperpartisanData(test_examples, label_list, args.max_seq_length, tokenizer), batch_size=args.train_batch_size)
         logger.info("***** Running evaluation on test *****")
         logger.info("  Num examples = %d", len(test_examples))
         logger.info("  Batch size = %d", args.train_batch_size)
 
+        test_df = pd.read_csv(os.path.join(args.data_dir, "test.csv"))
+
         model.eval()
         # total_rates = np.array([0,0,0,0])
-        all_input_ids = np.array([])
-
         all_preds = np.array([])
         all_label_ids = np.array([])
+        all_text = np.array([])
         test_loss, test_accuracy = 0, 0
         nb_test_steps, nb_test_examples = 0, 0
         for input_ids, input_mask, segment_ids, label_ids, guids in test_dataloader:
@@ -1027,96 +1065,59 @@ def main():
             label_ids = label_ids.to(device)
 
             with torch.no_grad():
-                if args.use_crf:
-                    crf_label_ids = label_ids.clone()
-                    crf_label_ids[crf_label_ids == -1] = num_labels - 1 # Make -1's last label. This doesn't affect score, because these are masked.
-                    tmp_test_loss, logits = model(input_ids, segment_ids, input_mask, crf_label_ids)
-                else:
-                    tmp_test_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
+                tmp_test_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
 
+            logits = logits.detach().cpu().numpy()
             label_ids = label_ids.to('cpu').numpy()
+            tmp_test_accuracy = accuracy(logits, label_ids)
+            # tmp_rates = get_rates(logits, label_ids)
 
             test_loss += tmp_test_loss.mean().item()
+            test_accuracy += tmp_test_accuracy
+            # total_rates += tmp_rates
 
-            if not args.use_crf:
-                logits = logits.detach().cpu().numpy()
-                logits = np.argmax(logits, axis=-1)
+            guids = guids.numpy()
 
-            if length_fix and not args.use_crf:
-                curr_exs = np.array(test_examples)[guids.numpy().tolist()]
-                input_mask = input_mask.cpu().numpy()
-                for idx,ex in enumerate(curr_exs):
-                    curr_label_ids = label_ids[idx,:]
+            all_text = np.append(all_text, [test_df.iloc[guid].text for guid in guids])
+            all_preds = np.append(all_preds, np.argmax(logits, axis=1))
+            all_label_ids = np.append(all_label_ids, label_ids)
 
-                    # We do not just substract max_seq_length-1 because of our tokenization fix. -> It can populate input_ids with subwords and label_ids with -1 s.
-                    # if tokenization_fix:
-                    #     total_extras = 0
-                    #     for wrd in ex.text_a[1:]:
-                    #         curr_subwords = len(tokenizer.tokenize(wrd))
-                    #         if curr_subwords > 1:
-                    #             total_extras += curr_subwords - 1 # -1 for original word
-
-                    #     diff = len(ex.text_a[1:]) + total_extras - args.max_seq_length + 2
-
-                    # else:
-                    #     diff = len(ex.text_a[1:]) - args.max_seq_length + 2
-
-
-                    # if diff > 0: # This diff is to ascertain if our ids are padded or not. In this case they are not padded
-                    if input_mask[idx,-1] == 1: # If this is not a [PAD] token. So this was not padded
-                        # ipdb.set_trace()
-                        diff = len(ex.text_a[1:]) - len(curr_label_ids[curr_label_ids != -1]) # This is how much we are going to add
-
-                        all_preds = np.append(all_preds, logits[idx,curr_label_ids != -1].tolist() + [label_map["O"]] * diff) # we don't predict after max_seq_length, so we fill that with "O"
-                        all_label_ids = np.append(all_label_ids, [label_map[lab] for lab in ex.labels[1:]]) # start from 1 since the first one is for [CLS] token
-                    else: # In this case they are padded
-                        all_preds = np.append(all_preds, logits[idx,curr_label_ids != -1])
-                        all_label_ids = np.append(all_label_ids, curr_label_ids[curr_label_ids != -1])
-
-            else:
-                label_ids = label_ids.reshape(-1)
-
-                if args.use_crf:
-                    all_preds = np.append(all_preds, logits)
-                else:
-                    logits = logits.reshape(-1)
-                    all_preds = np.append(all_preds, logits[label_ids != -1])
-
-                all_label_ids = np.append(all_label_ids, label_ids[label_ids != -1])
-
-                if args.error_anal:
-                    curr_labels = [idtolabel[x] for x in label_ids[label_ids != -1]]
-                    curr_preds = [idtolabel[x] for x in logits[label_ids != -1]]
-                    curr_words = np.array(test_examples)[guids.numpy().tolist()]
-                    prev_idx = 0
-                    for curr_doc in curr_words:
-                        curr_text = curr_doc.text_a[1:]
-                        all_df = all_df.append({"words":curr_text, "gold":curr_labels[prev_idx:prev_idx+len(curr_text)], "pred":curr_preds[prev_idx:prev_idx+len(curr_text)]}, ignore_index=True)
-                        prev_idx += len(curr_text)
-
+            nb_test_examples += input_ids.size(0)
             nb_test_steps += 1
 
         test_loss = test_loss / nb_test_steps
-        test_accuracy = accuracy(all_preds, all_label_ids)
+        test_accuracy = test_accuracy / nb_test_examples
 
-        # TODO : fix testing by predicting rest of document as "O" and not limiting labels size to 512
+        out_df = pd.DataFrame({"text":all_text, "label":all_label_ids, "prediction":all_preds})
 
-        # precision, recall, f1, _ = precision_recall_fscore_support(all_label_ids, all_preds, average="macro", labels=list(range(0,num_labels)))
-        (precision, recall, f1), out_json = evaluate2([idtolabel[x] for x in all_label_ids.tolist()], [idtolabel[x] for x in all_preds.tolist()])
+        rev_label_map = {}
+        for j, v in enumerate(label_list):
+            rev_label_map[j] = v
+
+        def get_label(x):
+            return rev_label_map[x]
+
+        out_df.label = out_df.label.apply(get_label)
+        out_df.prediction = out_df.prediction.apply(get_label)
+        out_df.to_csv(os.path.join(args.data_dir, "preds.csv"), index=False)
+
+        precision, recall, f1, _ = precision_recall_fscore_support(all_label_ids, all_preds, average="macro", labels=list(range(0,num_labels)))
         mcc = matthews_corrcoef(all_label_ids, all_preds)
+
+        conf_df = pd.DataFrame(confusion_matrix(all_label_ids, all_preds), columns=label_list)
+        conf_df.index = label_list
+        conf_df.to_html(args.data_dir + "/confusion_matrix.html")
+        scores_df = pd.DataFrame(np.array([a for a in precision_recall_fscore_support(all_label_ids, all_preds)[:-1]]).transpose(), columns=["Precision Macro", "Recall Macro", "F1 Macro"])
+        scores_df = scores_df.append({"Precision Macro":precision, "Recall Macro":recall, "F1 Macro":f1}, ignore_index=True)
+        scores_df.index = label_list + ["Total"]
+        scores_df.to_html(args.data_dir + "/scores.html")
+
         result = {"test_loss": test_loss,
                   "test_accuracy": test_accuracy,
-                  "precision": precision,
-                  "recall": recall,
-                  "f1": f1,
+                  "precision_macro": precision,
+                  "recall_macro": recall,
+                  "f1_macro": f1,
                   "mcc": mcc}
-
-        if args.scores_matrix:
-            scores = pd.DataFrame(out_json)
-            scores = scores.T
-            scores.columns = ["Precision Macro", "Recall Macro", "F1 Macro"]
-            scores = scores.applymap(lambda x: '{0:,.2f}'.format(x)) # They are all strings now
-            scores.to_html(re.sub(r"^(.+)\.pt$", r"\g<1>_scores.html", args.output_file))
 
         # balanced_acc, f1_neg, f1_pos, mcc, recall_pos, precision_pos = get_scores(total_rates.tolist())
         # result = {'test_loss': test_loss,
@@ -1133,9 +1134,7 @@ def main():
         for key in sorted(result.keys()):
             logger.info("  %s = %.4f", key, result[key])
 
-
-        if args.error_anal:
-            all_df.to_json(re.sub(r"^(.+)\.pt$", r"\g<1>_error_anal.json", args.output_file), orient="records", lines=True, force_ascii=False)
+    print(accs)
 
 if __name__ == "__main__":
     main()

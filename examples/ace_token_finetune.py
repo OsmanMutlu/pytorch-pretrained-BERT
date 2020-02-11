@@ -29,22 +29,20 @@ from tqdm import tqdm, trange
 from pathlib import Path
 import math
 from sklearn.metrics import precision_recall_fscore_support, matthews_corrcoef
-import re
 
+import pdb
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from pytorch_pretrained_bert.tokenization import BertTokenizer
-from pytorch_pretrained_bert.modeling import BertForTokenClassification
+from pytorch_pretrained_bert.tokenization import printable_text, BertTokenizer
+from pytorch_pretrained_bert.modeling import BertForTokenClassification,BertCRF
 from pytorch_pretrained_bert.optimization import BertAdam
 
 from conlleval import evaluate
 from conlleval import evaluate2
-
-import ipdb
 
 logging.basicConfig(filename = '{}_log.txt'.format(datetime.datetime.now()),
                     format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -80,12 +78,11 @@ class InputExample(object):
 class InputFeatures(object):
     """A single set of features of data."""
 
-    def __init__(self, input_ids, input_mask, segment_ids, label_ids, guid):
+    def __init__(self, input_ids, input_mask, segment_ids, label_ids=None):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
         self.label_ids = label_ids
-        self.guid = guid
 
 
 class DataProcessor(object):
@@ -112,61 +109,39 @@ class DataProcessor(object):
         lines = [line.strip().split("\t") for line in lines]
         return lines
 
-class EmwProcessor(DataProcessor):
-    """Processor for the Hyperpartisan data set."""
-
-    def get_examples(self, input_file):
-        """See base class."""
-        logger.info("LOOKING AT {}".format(input_file))
-        return self._create_examples(self._read_tsv(input_file))
-
-    def get_labels(self):
-        """See base class."""
-        # return ["B-etime", "B-fname", "B-loc", "B-organizer", "B-participant", "B-place", "B-target", "B-trigger", "I-etime", "I-fname", "I-loc", "I-organizer", "I-participant", "I-place", "I-target", "I-trigger", "O"]
-        return ["B-etime", "B-fname", "B-organizer", "B-participant", "B-place", "B-target", "B-trigger", "I-etime", "I-fname", "I-organizer", "I-participant", "I-place", "I-target", "I-trigger", "O"]
-
-    def _create_examples(self, lines):
-        """Creates examples for the training and dev sets."""
-#        self.label_list = lines.label.unique().tolist()
-        examples = []
-        words = []
-        labels = []
-        j = 0
-        for (i, line) in enumerate(lines):
-            guid = j
-            if line[0] == "SAMPLE_START":
-                words.append("[CLS]")
-                labels.append(-1)
-            elif line[0] == "[SEP]":
-                # Since we may have more than two sentences in a sample, we can not assign the third sentences tokens segment ids
-                # words.append("[PAD]")
-                # labels.append(-1)
-                continue
-            elif line[0] == "":
-                examples.append(InputExample(guid=guid, text_a=words, labels=labels))
-                j += 1
-                words = []
-                labels = []
-                continue
-            elif line[0] in ["\x91", "\x92", "\x97"]:
-                continue
-            else:
-                words.append(line[0])
-                labels.append(line[1])
-
-        return examples
-
 class TriggerProcessor(DataProcessor):
     """Processor for the Hyperpartisan data set."""
 
-    def get_examples(self, input_file):
+    def __init__(self, etype):
+        self.etype = etype
+
+    def get_examples(self, input_file, test=False):
         """See base class."""
         logger.info("LOOKING AT {}".format(input_file))
+        if test:
+            return self._create_examples_for_test(self._read_tsv(input_file))
         return self._create_examples(self._read_tsv(input_file))
 
     def get_labels(self):
         """See base class."""
-        return ["B-trigger", "I-trigger", "O"]
+        if self.etype == "Business":
+            return ["B-Start-Org", "B-End-Org", "B-Declare-Bankruptcy", "B-Merge-Org", "I-Start-Org", "I-End-Org", "I-Declare-Bankruptcy", "I-Merge-Org", "O"]
+        elif self.etype == "Conflict":
+            return ["B-Attack", "B-Demonstrate", "I-Attack", "I-Demonstrate", "O"]
+        elif self.etype == "Contact":
+            return ["B-Meet", "B-Phone-Write", "I-Meet", "I-Phone-Write", "O"]
+        elif self.etype == "Justice":
+            return ["B-Arrest-Jail", "B-Release-Parole", "B-Charge-Indict", "B-Trial-Hearing", "B-Sue", "B-Convict", "B-Sentence", "B-Fine", "B-Execute", "B-Extradite", "B-Acquit", "B-Pardon", "B-Appeal", "I-Arrest-Jail", "I-Release-Parole", "I-Charge-Indict", "I-Trial-Hearing", "I-Sue", "I-Convict", "I-Sentence", "I-Fine", "I-Execute", "I-Extradite", "I-Acquit", "I-Pardon", "I-Appeal", "O"]
+        elif self.etype == "Life":
+            return ["B-Be-Born", "B-Die", "B-Marry", "B-Divorce", "B-Injure", "I-Be-Born", "I-Die", "I-Marry", "I-Divorce", "I-Injure", "O"]
+        elif self.etype == "Movement":
+            return ["B-Transport", "I-Transport", "O"]
+        elif self.etype == "Personnel":
+            return ["B-Start-Position", "B-End-Position", "B-Nominate", "B-Elect", "I-Start-Position", "I-End-Position", "I-Nominate", "I-Elect", "O"]
+        elif self.etype == "Transaction":
+            return ["B-Transfer-Ownership", "B-Transfer-Money", "I-Transfer-Ownership", "I-Transfer-Money", "O"]
+        else:
+            raise Exception("Etype %s not known!" %self.etype)
 
     def _create_examples(self, lines):
         """Creates examples for the training and dev sets."""
@@ -199,17 +174,67 @@ class TriggerProcessor(DataProcessor):
 
         return examples
 
-class SemanticProcessor(DataProcessor):
+    def _create_examples_for_test(self, lines):
+        """Creates examples for the training and dev sets."""
+#        self.label_list = lines.label.unique().tolist()
+        examples = []
+        words = []
+        j = 0
+        for (i, line) in enumerate(lines):
+            guid = j
+            if line[0] == "SAMPLE_START":
+                words.append("[CLS]")
+            elif line[0] == "[SEP]":
+                # Since we may have more than two sentences in a sample, we can not assign the third sentences tokens segment ids
+                # words.append("[PAD]")
+                # labels.append(-1)
+                continue
+            elif line[0] == "":
+                examples.append(InputExample(guid=guid, text_a=words))
+                j += 1
+                words = []
+                continue
+            else:
+                words.append(line[0])
+
+        return examples
+
+class AllProcessor(DataProcessor):
     """Processor for the Hyperpartisan data set."""
 
-    def get_examples(self, input_file):
+    def __init__(self, etype):
+        self.etype = etype
+
+    def get_examples(self, input_file, test=False):
         """See base class."""
         logger.info("LOOKING AT {}".format(input_file))
+        if test:
+            return self._create_examples_for_test(self._read_tsv(input_file))
         return self._create_examples(self._read_tsv(input_file))
 
+    #["Person", "Place", "Buyer", "Seller", "Beneficiary", "Price", "Artifact", "Origin", "Destination", "Giver", "Recipient", "Money", "Org", "Agent", "Victim", "Instrument", "Entity", "Attacker", "Target", "Defendant", "Adjudicator", "Prosecutor", "Plaintiff", "Crime", "Position", "Sentence", "Vehicle", "Time-Within", "Time-Starting", "Time-Ending", "Time-Before", "Time-After", "Time-Holds", "Time-At-Beginning", "Time-At-End"]
+
+    # TODO : Maybe some event types only use a subset of these arguments
     def get_labels(self):
         """See base class."""
-        return ["B-demonst", "B-ind_act", "B-group_clash", "B-arm_mil", "B-elec_pol", "B-other", "I-demonst", "I-ind_act", "I-group_clash", "I-arm_mil", "I-elec_pol", "I-other", "O"]
+        if self.etype == "Business":
+            return ["B-Start-Org", "B-End-Org", "B-Declare-Bankruptcy", "B-Merge-Org", "B-Person", "B-Place", "B-Buyer", "B-Seller", "B-Beneficiary", "B-Price", "B-Artifact", "B-Origin", "B-Destination", "B-Giver", "B-Recipient", "B-Money", "B-Org", "B-Agent", "B-Victim", "B-Instrument", "B-Entity", "B-Attacker", "B-Target", "B-Defendant", "B-Adjudicator", "B-Prosecutor", "B-Plaintiff", "B-Crime", "B-Position", "B-Sentence", "B-Vehicle", "B-Time-Within", "B-Time-Starting", "B-Time-Ending", "B-Time-Before", "B-Time-After", "B-Time-Holds", "B-Time-At-Beginning", "B-Time-At-End", "I-Start-Org", "I-End-Org", "I-Declare-Bankruptcy", "I-Merge-Org", "I-Person", "I-Place", "I-Buyer", "I-Seller", "I-Beneficiary", "I-Price", "I-Artifact", "I-Origin", "I-Destination", "I-Giver", "I-Recipient", "I-Money", "I-Org", "I-Agent", "I-Victim", "I-Instrument", "I-Entity", "I-Attacker", "I-Target", "I-Defendant", "I-Adjudicator", "I-Prosecutor", "I-Plaintiff", "I-Crime", "I-Position", "I-Sentence", "I-Vehicle", "I-Time-Within", "I-Time-Starting", "I-Time-Ending", "I-Time-Before", "I-Time-After", "I-Time-Holds", "I-Time-At-Beginning", "I-Time-At-End", "O"]
+        elif self.etype == "Conflict":
+            return ["B-Attack", "B-Demonstrate", "B-Person", "B-Place", "B-Buyer", "B-Seller", "B-Beneficiary", "B-Price", "B-Artifact", "B-Origin", "B-Destination", "B-Giver", "B-Recipient", "B-Money", "B-Org", "B-Agent", "B-Victim", "B-Instrument", "B-Entity", "B-Attacker", "B-Target", "B-Defendant", "B-Adjudicator", "B-Prosecutor", "B-Plaintiff", "B-Crime", "B-Position", "B-Sentence", "B-Vehicle", "B-Time-Within", "B-Time-Starting", "B-Time-Ending", "B-Time-Before", "B-Time-After", "B-Time-Holds", "B-Time-At-Beginning", "B-Time-At-End", "I-Attack", "I-Demonstrate", "I-Person", "I-Place", "I-Buyer", "I-Seller", "I-Beneficiary", "I-Price", "I-Artifact", "I-Origin", "I-Destination", "I-Giver", "I-Recipient", "I-Money", "I-Org", "I-Agent", "I-Victim", "I-Instrument", "I-Entity", "I-Attacker", "I-Target", "I-Defendant", "I-Adjudicator", "I-Prosecutor", "I-Plaintiff", "I-Crime", "I-Position", "I-Sentence", "I-Vehicle", "I-Time-Within", "I-Time-Starting", "I-Time-Ending", "I-Time-Before", "I-Time-After", "I-Time-Holds", "I-Time-At-Beginning", "I-Time-At-End", "O"]
+        elif self.etype == "Contact":
+            return ["B-Meet", "B-Phone-Write", "B-Person", "B-Place", "B-Buyer", "B-Seller", "B-Beneficiary", "B-Price", "B-Artifact", "B-Origin", "B-Destination", "B-Giver", "B-Recipient", "B-Money", "B-Org", "B-Agent", "B-Victim", "B-Instrument", "B-Entity", "B-Attacker", "B-Target", "B-Defendant", "B-Adjudicator", "B-Prosecutor", "B-Plaintiff", "B-Crime", "B-Position", "B-Sentence", "B-Vehicle", "B-Time-Within", "B-Time-Starting", "B-Time-Ending", "B-Time-Before", "B-Time-After", "B-Time-Holds", "B-Time-At-Beginning", "B-Time-At-End", "I-Meet", "I-Phone-Write", "I-Person", "I-Place", "I-Buyer", "I-Seller", "I-Beneficiary", "I-Price", "I-Artifact", "I-Origin", "I-Destination", "I-Giver", "I-Recipient", "I-Money", "I-Org", "I-Agent", "I-Victim", "I-Instrument", "I-Entity", "I-Attacker", "I-Target", "I-Defendant", "I-Adjudicator", "I-Prosecutor", "I-Plaintiff", "I-Crime", "I-Position", "I-Sentence", "I-Vehicle", "I-Time-Within", "I-Time-Starting", "I-Time-Ending", "I-Time-Before", "I-Time-After", "I-Time-Holds", "I-Time-At-Beginning", "I-Time-At-End", "O"]
+        elif self.etype == "Justice":
+            return ["B-Arrest-Jail", "B-Release-Parole", "B-Charge-Indict", "B-Trial-Hearing", "B-Sue", "B-Convict", "B-Sentence", "B-Fine", "B-Execute", "B-Extradite", "B-Acquit", "B-Pardon", "B-Appeal", "B-Person", "B-Place", "B-Buyer", "B-Seller", "B-Beneficiary", "B-Price", "B-Artifact", "B-Origin", "B-Destination", "B-Giver", "B-Recipient", "B-Money", "B-Org", "B-Agent", "B-Victim", "B-Instrument", "B-Entity", "B-Attacker", "B-Target", "B-Defendant", "B-Adjudicator", "B-Prosecutor", "B-Plaintiff", "B-Crime", "B-Position", "B-Sentence", "B-Vehicle", "B-Time-Within", "B-Time-Starting", "B-Time-Ending", "B-Time-Before", "B-Time-After", "B-Time-Holds", "B-Time-At-Beginning", "B-Time-At-End", "I-Arrest-Jail", "I-Release-Parole", "I-Charge-Indict", "I-Trial-Hearing", "I-Sue", "I-Convict", "I-Sentence", "I-Fine", "I-Execute", "I-Extradite", "I-Acquit", "I-Pardon", "I-Appeal", "I-Person", "I-Place", "I-Buyer", "I-Seller", "I-Beneficiary", "I-Price", "I-Artifact", "I-Origin", "I-Destination", "I-Giver", "I-Recipient", "I-Money", "I-Org", "I-Agent", "I-Victim", "I-Instrument", "I-Entity", "I-Attacker", "I-Target", "I-Defendant", "I-Adjudicator", "I-Prosecutor", "I-Plaintiff", "I-Crime", "I-Position", "I-Sentence", "I-Vehicle", "I-Time-Within", "I-Time-Starting", "I-Time-Ending", "I-Time-Before", "I-Time-After", "I-Time-Holds", "I-Time-At-Beginning", "I-Time-At-End", "O"]
+        elif self.etype == "Life":
+            return ["B-Be-Born", "B-Die", "B-Marry", "B-Divorce", "B-Injure", "B-Person", "B-Place", "B-Buyer", "B-Seller", "B-Beneficiary", "B-Price", "B-Artifact", "B-Origin", "B-Destination", "B-Giver", "B-Recipient", "B-Money", "B-Org", "B-Agent", "B-Victim", "B-Instrument", "B-Entity", "B-Attacker", "B-Target", "B-Defendant", "B-Adjudicator", "B-Prosecutor", "B-Plaintiff", "B-Crime", "B-Position", "B-Sentence", "B-Vehicle", "B-Time-Within", "B-Time-Starting", "B-Time-Ending", "B-Time-Before", "B-Time-After", "B-Time-Holds", "B-Time-At-Beginning", "B-Time-At-End", "I-Be-Born", "I-Die", "I-Marry", "I-Divorce", "I-Injure", "I-Person", "I-Place", "I-Buyer", "I-Seller", "I-Beneficiary", "I-Price", "I-Artifact", "I-Origin", "I-Destination", "I-Giver", "I-Recipient", "I-Money", "I-Org", "I-Agent", "I-Victim", "I-Instrument", "I-Entity", "I-Attacker", "I-Target", "I-Defendant", "I-Adjudicator", "I-Prosecutor", "I-Plaintiff", "I-Crime", "I-Position", "I-Sentence", "I-Vehicle", "I-Time-Within", "I-Time-Starting", "I-Time-Ending", "I-Time-Before", "I-Time-After", "I-Time-Holds", "I-Time-At-Beginning", "I-Time-At-End", "O"]
+        elif self.etype == "Movement":
+            return ["B-Transport", "B-Person", "B-Place", "B-Buyer", "B-Seller", "B-Beneficiary", "B-Price", "B-Artifact", "B-Origin", "B-Destination", "B-Giver", "B-Recipient", "B-Money", "B-Org", "B-Agent", "B-Victim", "B-Instrument", "B-Entity", "B-Attacker", "B-Target", "B-Defendant", "B-Adjudicator", "B-Prosecutor", "B-Plaintiff", "B-Crime", "B-Position", "B-Sentence", "B-Vehicle", "B-Time-Within", "B-Time-Starting", "B-Time-Ending", "B-Time-Before", "B-Time-After", "B-Time-Holds", "B-Time-At-Beginning", "B-Time-At-End", "I-Transport", "I-Person", "I-Place", "I-Buyer", "I-Seller", "I-Beneficiary", "I-Price", "I-Artifact", "I-Origin", "I-Destination", "I-Giver", "I-Recipient", "I-Money", "I-Org", "I-Agent", "I-Victim", "I-Instrument", "I-Entity", "I-Attacker", "I-Target", "I-Defendant", "I-Adjudicator", "I-Prosecutor", "I-Plaintiff", "I-Crime", "I-Position", "I-Sentence", "I-Vehicle", "I-Time-Within", "I-Time-Starting", "I-Time-Ending", "I-Time-Before", "I-Time-After", "I-Time-Holds", "I-Time-At-Beginning", "I-Time-At-End", "O"]
+        elif self.etype == "Personnel":
+            return ["B-Start-Position", "B-End-Position", "B-Nominate", "B-Elect", "B-Person", "B-Place", "B-Buyer", "B-Seller", "B-Beneficiary", "B-Price", "B-Artifact", "B-Origin", "B-Destination", "B-Giver", "B-Recipient", "B-Money", "B-Org", "B-Agent", "B-Victim", "B-Instrument", "B-Entity", "B-Attacker", "B-Target", "B-Defendant", "B-Adjudicator", "B-Prosecutor", "B-Plaintiff", "B-Crime", "B-Position", "B-Sentence", "B-Vehicle", "B-Time-Within", "B-Time-Starting", "B-Time-Ending", "B-Time-Before", "B-Time-After", "B-Time-Holds", "B-Time-At-Beginning", "B-Time-At-End", "I-Start-Position", "I-End-Position", "I-Nominate", "I-Elect", "I-Person", "I-Place", "I-Buyer", "I-Seller", "I-Beneficiary", "I-Price", "I-Artifact", "I-Origin", "I-Destination", "I-Giver", "I-Recipient", "I-Money", "I-Org", "I-Agent", "I-Victim", "I-Instrument", "I-Entity", "I-Attacker", "I-Target", "I-Defendant", "I-Adjudicator", "I-Prosecutor", "I-Plaintiff", "I-Crime", "I-Position", "I-Sentence", "I-Vehicle", "I-Time-Within", "I-Time-Starting", "I-Time-Ending", "I-Time-Before", "I-Time-After", "I-Time-Holds", "I-Time-At-Beginning", "I-Time-At-End", "O"]
+        elif self.etype == "Transaction":
+            return ["B-Transfer-Ownership", "B-Transfer-Money", "B-Person", "B-Place", "B-Buyer", "B-Seller", "B-Beneficiary", "B-Price", "B-Artifact", "B-Origin", "B-Destination", "B-Giver", "B-Recipient", "B-Money", "B-Org", "B-Agent", "B-Victim", "B-Instrument", "B-Entity", "B-Attacker", "B-Target", "B-Defendant", "B-Adjudicator", "B-Prosecutor", "B-Plaintiff", "B-Crime", "B-Position", "B-Sentence", "B-Vehicle", "B-Time-Within", "B-Time-Starting", "B-Time-Ending", "B-Time-Before", "B-Time-After", "B-Time-Holds", "B-Time-At-Beginning", "B-Time-At-End", "I-Transfer-Ownership", "I-Transfer-Money", "I-Person", "I-Place", "I-Buyer", "I-Seller", "I-Beneficiary", "I-Price", "I-Artifact", "I-Origin", "I-Destination", "I-Giver", "I-Recipient", "I-Money", "I-Org", "I-Agent", "I-Victim", "I-Instrument", "I-Entity", "I-Attacker", "I-Target", "I-Defendant", "I-Adjudicator", "I-Prosecutor", "I-Plaintiff", "I-Crime", "I-Position", "I-Sentence", "I-Vehicle", "I-Time-Within", "I-Time-Starting", "I-Time-Ending", "I-Time-Before", "I-Time-After", "I-Time-Holds", "I-Time-At-Beginning", "I-Time-At-End", "O"]
+        else:
+            raise Exception("Etype %s not known!" %self.etype)
 
     def _create_examples(self, lines):
         """Creates examples for the training and dev sets."""
@@ -242,15 +267,36 @@ class SemanticProcessor(DataProcessor):
 
         return examples
 
+    def _create_examples_for_test(self, lines):
+        """Creates examples for the training and dev sets."""
+#        self.label_list = lines.label.unique().tolist()
+        examples = []
+        words = []
+        j = 0
+        for (i, line) in enumerate(lines):
+            guid = j
+            if line[0] == "SAMPLE_START":
+                words.append("[CLS]")
+            elif line[0] == "[SEP]":
+                # Since we may have more than two sentences in a sample, we can not assign the third sentences tokens segment ids
+                # words.append("[PAD]")
+                # labels.append(-1)
+                continue
+            elif line[0] == "":
+                examples.append(InputExample(guid=guid, text_a=words))
+                j += 1
+                words = []
+                continue
+            else:
+                words.append(line[0])
 
-def convert_examples_to_features(example, label_list, max_seq_length, tokenizer, tokenization_fix=True, experiment=False):
+        return examples
 
+def convert_examples_to_features(example, label_list, max_seq_length, tokenizer):
     """Loads a data file into a list of `InputBatch`s."""
     label_map = {}
     for (i, label) in enumerate(label_list):
         label_map[label] = i
-
-    # label_map["X"] = len(label_list) # for wordpieces
 
     tokens = []
     label_ids = []
@@ -261,49 +307,23 @@ def convert_examples_to_features(example, label_list, max_seq_length, tokenizer,
         #     continue
         if word == "[CLS]":
             tokens.append(word)
-            if tokenization_fix:
-                label_ids.append(-1)
-
             continue
 
         # logger.info(word)
         tokenized = tokenizer.tokenize(word)
         # logger.info(tokenized)
         # logger.info("--------")
+        # If we want to keep all wordpieces
+        # tokens.extend(tokenized)
+        # label_ids.extend(len(tokenized)*[label_map[example.labels[i]]])
+        try:
+            tokens.append(tokenized[0])
+        except:
+            tokens.append("[UNK]")
+        # label_ids.append(label_map[example.labels[i]])
 
-        # NOTE : If word is a unique name such as place names, make it unknown
-        # if len(tokenized) > 0:
-        #     if re.search(r"^[A-Z]", word):
-        #         tokens.append("[UNK]")
-        #     else:
-        #         tokens.append(tokenized[0])
-        # else:
-        #     tokens.append("[UNK]")
-
-        if not tokenization_fix:
-            try:
-                tokens.append(tokenized[0])
-            except:
-                tokens.append("[UNK]")
-
-        else:
-            # NOTE : If we want to keep all wordpieces
-            label_ids.append(label_map[example.labels[i]])
-            if len(tokenized) == 1:
-                tokens.extend(tokenized)
-            elif len(tokenized) > 1:
-                if experiment and re.search("^[A-Z]", word): # if the word starts with capital letter
-                    tokens.append("[unused0]")
-                    continue
-
-                tokens.extend(tokenized)
-                label_ids.extend([-1]*(len(tokenized) - 1)) # These will be masked when calculating loss
-            else:
-                tokens.append("[UNK]")
-
-
-    if not tokenization_fix:
-        label_ids = [label_map[x] if x != -1 else x for x in example.labels]
+    # label_ids = [label_map[x] if x not in [-1, -2] else x for x in example.labels]
+    label_ids = [label_map[x] if x != -1 else x for x in example.labels]
 
     if len(tokens) > max_seq_length - 1:
         tokens = tokens[0:(max_seq_length - 1)]
@@ -357,8 +377,7 @@ def convert_examples_to_features(example, label_list, max_seq_length, tokenizer,
     return InputFeatures(input_ids=input_ids,
                          input_mask=input_mask,
                          segment_ids=segment_ids,
-                         label_ids=label_ids,
-                         guid=example.guid)
+                         label_ids=label_ids)
 
 
 class HyperpartisanData(Dataset):
@@ -380,9 +399,69 @@ class HyperpartisanData(Dataset):
         input_mask = torch.tensor(feats.input_mask, dtype=torch.long)
         segment_ids = torch.tensor(feats.segment_ids, dtype=torch.long)
         label_ids = torch.tensor(feats.label_ids, dtype=torch.long)
-        guids = torch.tensor(feats.guid, dtype=torch.long)
 
-        return input_ids, input_mask, segment_ids, label_ids, guids
+        return input_ids, input_mask, segment_ids, label_ids
+
+
+def convert_examples_to_features_for_test(example, max_seq_length, tokenizer):
+    """Loads a data file into a list of `InputBatch`s."""
+    tokens = []
+    # words = example.text_a
+
+    for (i, word) in enumerate(example.text_a):
+        # if word == "[SEP]":
+        #     continue
+        if word == "[CLS]":
+            tokens.append(word)
+            continue
+
+        tokenized = tokenizer.tokenize(word)
+        try:
+            tokens.append(tokenized[0])
+        except:
+            tokens.append("[UNK]")
+
+    if len(tokens) > max_seq_length - 1:
+        tokens = tokens[0:(max_seq_length - 1)]
+
+    tokens.append("[SEP]")
+    segment_ids = [0] * len(tokens)
+    input_ids = tokenizer.convert_tokens_to_ids(tokens)
+    input_mask = [1] * len(input_ids)
+
+    while len(input_ids) < max_seq_length:
+        input_ids.append(0)
+        input_mask.append(0)
+        segment_ids.append(0)
+
+    assert len(input_ids) == max_seq_length
+    assert len(input_mask) == max_seq_length
+    assert len(segment_ids) == max_seq_length
+
+    return InputFeatures(input_ids=input_ids,
+                         input_mask=input_mask,
+                         segment_ids=segment_ids)
+
+
+class HyperpartisanData_for_test(Dataset):
+    """"""
+    def __init__(self, examples, max_seq_length, tokenizer):
+        self.examples = examples
+        self.max_seq_length = max_seq_length
+        self.tokenizer = tokenizer
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, idx):
+        ex = self.examples[idx]
+        feats = convert_examples_to_features_for_test(ex, self.max_seq_length, self.tokenizer)
+
+        input_ids = torch.tensor(feats.input_ids, dtype=torch.long)
+        input_mask = torch.tensor(feats.input_mask, dtype=torch.long)
+        segment_ids = torch.tensor(feats.segment_ids, dtype=torch.long)
+
+        return input_ids, input_mask, segment_ids, ex.guid
 
 def _truncate_seq_pair(tokens_a, tokens_b, max_length):
     """Truncates a sequence pair in place to the maximum length."""
@@ -472,6 +551,11 @@ def main():
                         type=str,
                         required=True,
                         help="The name of the task to train.")
+    parser.add_argument("--etype",
+                        default=None,
+                        type=str,
+                        required=True,
+                        help="The name of event type.")
     parser.add_argument("--output_file",
                         default=None,
                         type=str,
@@ -572,44 +656,27 @@ def main():
                         default=False,
                         action='store_true',
                         help="Whether to use CRF layer at the end.")
-    parser.add_argument('--error_anal',
-                        default=False,
-                        action='store_true',
-                        help="Whether to store error analysis on test set.")
-    parser.add_argument('--scores_matrix',
-                        default=False,
-                        action='store_true',
-                        help="Whether to store scores.")
 
 
     args = parser.parse_args()
 
-    multi_gpu = True
-    device = torch.device("cuda:5")
-    device_ids = [5, 6, 7]
-    length_fix = True
-    # If you want to change these two, you must change them in convert_examples_to_features function
-    tokenization_fix = True
-    experiment = False
-
     processors = {
-        "emw": EmwProcessor,
         "trigger": TriggerProcessor,
-        "semantic": SemanticProcessor,
+        "all": AllProcessor,
     }
 
-    # if args.local_rank == -1 or args.no_cuda:
-    #     device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-    #     n_gpu = torch.cuda.device_count()
-    # else:
-    #     device = torch.device("cuda", args.local_rank)
-    #     n_gpu = 1
-    #     # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
-    #     torch.distributed.init_process_group(backend='nccl')
-    #     if args.fp16:
-    #         logger.info("16-bits training currently not supported in distributed training")
-    #         args.fp16 = False # (see https://github.com/pytorch/pytorch/pull/13496)
-    # logger.info("device %s n_gpu %d distributed training %r", device, n_gpu, bool(args.local_rank != -1))
+    if args.local_rank == -1 or args.no_cuda:
+        device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+        n_gpu = torch.cuda.device_count()
+    else:
+        device = torch.device("cuda", args.local_rank)
+        n_gpu = 1
+        # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
+        torch.distributed.init_process_group(backend='nccl')
+        if args.fp16:
+            logger.info("16-bits training currently not supported in distributed training")
+            args.fp16 = False # (see https://github.com/pytorch/pytorch/pull/13496)
+    logger.info("device %s n_gpu %d distributed training %r", device, n_gpu, bool(args.local_rank != -1))
 
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
@@ -620,9 +687,8 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    # if n_gpu > 0:
-    #     torch.cuda.manual_seed_all(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
+    if n_gpu > 0:
+        torch.cuda.manual_seed_all(args.seed)
 
     # if not args.do_train and not args.do_eval and not args.do_test:
     #     raise ValueError("At least one of `do_train` or `do_eval` or `do_test` must be True.")
@@ -636,11 +702,21 @@ def main():
     if task_name not in processors:
         raise ValueError("Task not found: %s" % (task_name))
 
-    processor = processors[task_name]()
+    processor = processors[task_name](args.etype)
 
     tokenizer = BertTokenizer.from_pretrained(args.bert_tokenizer)
 
     label_list = processor.get_labels()
+    label_map = {}
+    for (i, label) in enumerate(label_list):
+        label_map[i] = label
+
+
+    etype_label_list = ["Life", "Transaction", "Movement", "Business", "Conflict", "Contact", "Personnel", "Justice"]
+    etype_label_map = {}
+    for i,label in enumerate(etype_label_list):
+        etype_label_map[i] = label
+
 
     train_examples = None
     num_train_steps = None
@@ -652,55 +728,16 @@ def main():
         train_dataloader = DataLoader(dataset=HyperpartisanData(train_examples, label_list, args.max_seq_length, tokenizer), batch_size=args.train_batch_size)
 
     if args.do_eval:
-        eval_examples = processor.get_examples(args.dev_file)
-        eval_dataloader = DataLoader(dataset=HyperpartisanData(eval_examples, label_list, args.max_seq_length, tokenizer), batch_size=args.train_batch_size)
+        eval_examples = processor.get_examples(args.dev_file, test=True)
+        eval_dataloader = DataLoader(dataset=HyperpartisanData_for_test(eval_examples, args.max_seq_length, tokenizer), batch_size=args.train_batch_size)
+        dev_df = pd.read_json("/scratch/users/omutlu/ace2005/Token/dev.json", lines=True, orient="records")
+        dev_df.labels = dev_df.labels.apply(lambda x: [etype_label_map[label] for label in x])
 
     if args.do_test:
-        test_examples = processor.get_examples(args.test_file)
-        test_dataloader = DataLoader(dataset=HyperpartisanData(test_examples, label_list, args.max_seq_length, tokenizer), batch_size=args.train_batch_size)
-
-
-    # NOTE : Tokenization of every word in dataset
-    # tokenized_df = pd.DataFrame(columns=["word", "tokens"])
-    # for ex in train_examples:
-    #     for word in ex.text_a:
-    #         if len(tokenized_df[tokenized_df.word == word]) > 0:
-    #             continue
-
-    #         tokenized = tokenizer.tokenize(word)
-
-    #         if len(tokenized) > 0:
-    #             tokenized_df = tokenized_df.append({"word":word, "tokens":tokenized}, ignore_index=True)
-    #         else:
-    #             tokenized_df = tokenized_df.append({"word":word, "tokens":["UNK"]}, ignore_index=True)
-
-    # for ex in eval_examples:
-    #     for word in ex.text_a:
-    #         if len(tokenized_df[tokenized_df.word == word]) > 0:
-    #             continue
-
-    #         tokenized = tokenizer.tokenize(word)
-
-    #         if len(tokenized) > 0:
-    #             tokenized_df = tokenized_df.append({"word":word, "tokens":tokenized}, ignore_index=True)
-    #         else:
-    #             tokenized_df = tokenized_df.append({"word":word, "tokens":["UNK"]}, ignore_index=True)
-
-    # for ex in test_examples:
-    #     for word in ex.text_a:
-    #         if len(tokenized_df[tokenized_df.word == word]) > 0:
-    #             continue
-
-    #         tokenized = tokenizer.tokenize(word)
-
-    #         if len(tokenized) > 0:
-    #             tokenized_df = tokenized_df.append({"word":word, "tokens":tokenized}, ignore_index=True)
-    #         else:
-    #             tokenized_df = tokenized_df.append({"word":word, "tokens":["UNK"]}, ignore_index=True)
-
-    # tokenized_df.to_json("tokenized.json", orient="records", lines=True, force_ascii=False)
-    # sys.exit()
-
+        test_examples = processor.get_examples(args.test_file, test=True)
+        test_dataloader = DataLoader(dataset=HyperpartisanData_for_test(test_examples, args.max_seq_length, tokenizer), batch_size=args.train_batch_size)
+        test_df = pd.read_json("/scratch/users/omutlu/ace2005/Token/test.json", lines=True, orient="records")
+        test_df.labels = test_df.labels.apply(lambda x: [etype_label_map[label] for label in x])
 
     # Prepare model
     num_labels = len(label_list)
@@ -711,8 +748,7 @@ def main():
             constraints.extend([(i,j) for j in I_list[:i] + I_list[i+1:]])
 
         constraints.extend([(len(label_list)-1,i) for i in I_list]) # last element is "O".
-        # model = BertCRF.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels, constraints=constraints, include_start_end_transitions=False)
-        model = BertForTokenClassification.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels)
+        model = BertCRF.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels, constraints=constraints, include_start_end_transitions=False)
     else:
         model = BertForTokenClassification.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels)
 
@@ -721,12 +757,11 @@ def main():
         logger.info("Model state has been loaded.")
 
     model.to(device)
-
-    if multi_gpu:
-        model = torch.nn.DataParallel(model, device_ids=device_ids)
-    else:
-        if device != torch.device("cpu"):
-            model = torch.nn.DataParallel(model)
+    if args.local_rank != -1:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
+                                                          output_device=args.local_rank)
+    elif n_gpu > 1:
+        model = torch.nn.DataParallel(model)
 
     # Prepare optimizer
     if args.fp16:
@@ -752,12 +787,9 @@ def main():
     for (i, label) in enumerate(label_list):
         idtolabel[i] = label
 
-
-
-
     global_step = 0
     # best_mcc = 0.0
-    best_f1 = 0.0
+    best_acc = 0.0
     if args.do_train:
         logger.info("***** Running training *****")
         logger.info("  Num examples = %d", len(train_examples))
@@ -770,7 +802,7 @@ def main():
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch = tuple(t.to(device) for t in batch)
-                input_ids, input_mask, segment_ids, label_ids, guids = batch
+                input_ids, input_mask, segment_ids, label_ids = batch
 
                 if args.use_crf:
                     crf_label_ids = label_ids.clone()
@@ -779,7 +811,7 @@ def main():
                 else:
                     loss, _ = model(input_ids, segment_ids, input_mask, label_ids)
 
-                if multi_gpu or device == torch.device("cuda"):
+                if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
                 if args.fp16 and args.loss_scale != 1.0:
                     # rescale loss for fp16 training
@@ -811,161 +843,141 @@ def main():
                     model.zero_grad()
                     global_step += 1
 
-                if global_step % args.val_each == 0:
-                    if args.do_eval:
-                        model.eval()
-                        # total_rates = np.array([0,0,0,0])
-                        all_preds = np.array([])
-                        all_label_ids = np.array([])
-                        eval_loss, eval_accuracy = 0, 0
-                        nb_eval_steps, nb_eval_examples = 0, 0
-                        for input_ids, input_mask, segment_ids, label_ids, guids in eval_dataloader:
-                            input_ids = input_ids.to(device)
-                            input_mask = input_mask.to(device)
-                            segment_ids = segment_ids.to(device)
-                            label_ids = label_ids.to(device)
+                # if global_step % args.val_each == 0:
+                #     if args.do_eval:
+                #         model.eval()
+                #         # total_rates = np.array([0,0,0,0])
+                #         all_preds = np.array([])
+                #         all_label_ids = np.array([])
+                #         eval_loss, eval_accuracy = 0, 0
+                #         nb_eval_steps, nb_eval_examples = 0, 0
+                #         for input_ids, input_mask, segment_ids, label_ids in eval_dataloader:
+                #             input_ids = input_ids.to(device)
+                #             input_mask = input_mask.to(device)
+                #             segment_ids = segment_ids.to(device)
+                #             label_ids = label_ids.to(device)
 
-                            with torch.no_grad():
-                                if args.use_crf:
-                                    crf_label_ids = label_ids.clone()
-                                    crf_label_ids[crf_label_ids == -1] = num_labels - 1 # Make -1's last label. This doesn't affect score, because these are masked.
-                                    tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, crf_label_ids)
-                                else:
-                                    tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
+                #             with torch.no_grad():
+                #                 if args.use_crf:
+                #                     crf_label_ids = label_ids.clone()
+                #                     crf_label_ids[crf_label_ids == -1] = num_labels - 1 # Make -1's last label. This doesn't affect score, because these are masked.
+                #                     tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, crf_label_ids)
+                #                 else:
+                #                     tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
 
-                            label_ids = label_ids.to('cpu').numpy()
+                #             label_ids = label_ids.to('cpu').numpy()
 
-                            # logger.info(logits)
+                #             # logger.info(logits)
 
-                            eval_loss += tmp_eval_loss.mean().item()
+                #             eval_loss += tmp_eval_loss.mean().item()
 
-                            if not args.use_crf:
-                                logits = logits.detach().cpu().numpy()
-                                logits = np.argmax(logits, axis=-1).reshape(-1)
+                #             if not args.use_crf:
+                #                 logits = logits.detach().cpu().numpy()
+                #                 logits = np.argmax(logits, axis=-1).reshape(-1)
 
-                            label_ids = label_ids.reshape(-1)
+                #             label_ids = label_ids.reshape(-1)
 
-                            # logger.info(logits)
-                            if args.use_crf:
-                                all_preds = np.append(all_preds, logits)
-                            else:
-                                all_preds = np.append(all_preds, logits[label_ids != -1])
+                #             # logger.info(logits)
+                #             if args.use_crf:
+                #                 all_preds = np.append(all_preds, logits)
+                #             else:
+                #                 all_preds = np.append(all_preds, logits[label_ids != -1])
 
-                            all_label_ids = np.append(all_label_ids, label_ids[label_ids != -1])
+                #             all_label_ids = np.append(all_label_ids, label_ids[label_ids != -1])
 
-                            nb_eval_steps += 1
+                #             nb_eval_steps += 1
 
-                        eval_loss = eval_loss / nb_eval_steps
-                        eval_accuracy = accuracy(all_preds, all_label_ids)
+                #         eval_loss = eval_loss / nb_eval_steps
+                #         eval_accuracy = accuracy(all_preds, all_label_ids)
 
-                        # precision, recall, f1, _ = precision_recall_fscore_support(all_label_ids, all_preds, average="macro", labels=list(range(0,num_labels)))
-                        (precision, recall, f1), _ = evaluate([idtolabel[x] for x in all_label_ids.tolist()], [idtolabel[x] for x in all_preds.tolist()])
-                        mcc = matthews_corrcoef(all_preds, all_label_ids)
-                        result = {"eval_loss": eval_loss,
-                                  "eval_accuracy": eval_accuracy,
-                                  "precision": precision,
-                                  "recall": recall,
-                                  "f1": f1,
-                                  "mcc": mcc}
+                #         # precision, recall, f1, _ = precision_recall_fscore_support(all_label_ids, all_preds, average="macro", labels=list(range(0,num_labels)))
+                #         precision, recall, f1 = evaluate([idtolabel[x] for x in all_label_ids.tolist()], [idtolabel[x] for x in all_preds.tolist()])
+                #         mcc = matthews_corrcoef(all_preds, all_label_ids)
+                #         result = {"eval_loss": eval_loss,
+                #                   "eval_accuracy": eval_accuracy,
+                #                   "precision": precision,
+                #                   "recall": recall,
+                #                   "f1": f1,
+                #                   "mcc": mcc}
 
-                        # balanced_acc, f1_neg, f1_pos, mcc, _, _ = get_scores(total_rates.tolist())
-                        # result = {'eval_loss': eval_loss,
-                        #           'eval_accuracy': eval_accuracy,
-                        #           'global_step': global_step,
-                        #           'balanced_accuracy' : balanced_acc,
-                        #           'f1_neg' : f1_neg,
-                        #           'f1_pos' : f1_pos,
-                        #           'mcc' : mcc,
-                        #           'loss': tr_loss/nb_tr_steps}
+                #         # balanced_acc, f1_neg, f1_pos, mcc, _, _ = get_scores(total_rates.tolist())
+                #         # result = {'eval_loss': eval_loss,
+                #         #           'eval_accuracy': eval_accuracy,
+                #         #           'global_step': global_step,
+                #         #           'balanced_accuracy' : balanced_acc,
+                #         #           'f1_neg' : f1_neg,
+                #         #           'f1_pos' : f1_pos,
+                #         #           'mcc' : mcc,
+                #         #           'loss': tr_loss/nb_tr_steps}
 
-                        # if best_mcc < mcc:
-                        #     best_mcc = mcc
-                        if best_f1 < f1:
-                            best_f1 = f1
-                            logger.info("Saving model...")
-                            model_to_save = model.module if hasattr(model, 'module') else model  # To handle multi gpu
-                            torch.save(model_to_save.state_dict(), args.output_file)
+                #         # if best_mcc < mcc:
+                #         #     best_mcc = mcc
+                #         if best_f1 < f1:
+                #             best_f1 = f1
+                #             logger.info("Saving model...")
+                #             model_to_save = model.module if hasattr(model, 'module') else model  # To handle multi gpu
+                #             torch.save(model_to_save.state_dict(), args.output_file)
 
-                        for key in sorted(result.keys()):
-                            logger.info("  %s = %.4f", key, result[key])
+                #         for key in sorted(result.keys()):
+                #             logger.info("  %s = %.4f", key, result[key])
 
-                        model.train() # back to training
+                #         model.train() # back to training
 
 
             if args.do_eval:
                 model.eval()
-                # total_rates = np.array([0,0,0,0])
-                all_preds = np.array([])
-                all_label_ids = np.array([])
-                eval_loss, eval_accuracy = 0, 0
-                nb_eval_steps, nb_eval_examples = 0, 0
-                for input_ids, input_mask, segment_ids, label_ids, guids in eval_dataloader:
+                all_trigger_count = 0
+                all_argument_count = 0
+                corr_trigger_count = 0
+                corr_argument_count = 0
+                for input_ids, input_mask, segment_ids, doc_ids in eval_dataloader: # label_ids = None
                     input_ids = input_ids.to(device)
                     input_mask = input_mask.to(device)
                     segment_ids = segment_ids.to(device)
-                    label_ids = label_ids.to(device)
 
                     with torch.no_grad():
-                        if args.use_crf:
-                            crf_label_ids = label_ids.clone()
-                            crf_label_ids[crf_label_ids == -1] = num_labels - 1 # Make -1's last label. This doesn't affect score, because these are masked.
-                            tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, crf_label_ids)
-                        else:
-                            tmp_eval_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
+                        logits = model(input_ids, segment_ids, input_mask)
 
-                    label_ids = label_ids.to('cpu').numpy()
+                    # pdb.set_trace()
+                    logits = logits.detach().cpu().numpy()
+                    logits = np.argmax(logits, axis=-1)
 
-                    if not args.use_crf:
-                        logits = logits.detach().cpu().numpy()
-                        logits = np.argmax(logits, axis=-1).reshape(-1)
+                    for idx,doc_id in enumerate(doc_ids):
+                        elem = dev_df.iloc[doc_id.item()]
+                        if args.etype in elem.labels:
+                            token_labels = logits[idx,:]
+                            for event in elem.events:
+                                if args.etype != event["event_type"]:
+                                    continue
+                                all_trigger_count += 1
+                                curr_labels = token_labels[event["trigger"]["start"]:event["trigger"]["end"]]
+                                if all([event["event_subtype"] in label_map[label] for label in curr_labels]):
+                                    corr_trigger_count += 1
 
-                    label_ids = label_ids.reshape(-1)
+                                if args.task_name == "trigger":
+                                    continue
+                                for argument in event["arguments"]:
+                                    all_argument_count += 1
+                                    curr_labels = token_labels[argument["start"]:argument["end"]]
+                                    if all([argument["role"] in label_map[label] for label in curr_labels]):
+                                        corr_argument_count += 1
 
-                    if args.use_crf:
-                        all_preds = np.append(all_preds, logits)
-                    else:
-                        all_preds = np.append(all_preds, logits[label_ids != -1])
 
-                    all_label_ids = np.append(all_label_ids, label_ids[label_ids != -1])
+                if args.task_name == "trigger":
+                    acc = corr_trigger_count / all_trigger_count
+                else:
+                    trigger_acc = corr_trigger_count / all_trigger_count
+                    argument_acc = corr_argument_count / all_argument_count
+                    acc = (trigger_acc + argument_acc) / 2
 
-                    eval_loss += tmp_eval_loss.mean().item()
-
-                    nb_eval_steps += 1
-
-                eval_loss = eval_loss / nb_eval_steps
-                eval_accuracy = accuracy(all_preds, all_label_ids)
-
-                # precision, recall, f1, _ = precision_recall_fscore_support(all_label_ids, all_preds, average="macro", labels=list(range(0,num_labels)))
-                (precision, recall, f1), _ = evaluate([idtolabel[x] for x in all_label_ids.tolist()], [idtolabel[x] for x in all_preds.tolist()])
-                mcc = matthews_corrcoef(all_preds, all_label_ids)
-                result = {"eval_loss": eval_loss,
-                          "eval_accuracy": eval_accuracy,
-                          "precision": precision,
-                          "recall": recall,
-                          "f1": f1,
-                          "mcc": mcc}
-
-                # balanced_acc, f1_neg, f1_pos, mcc, _, _ = get_scores(total_rates.tolist())
-                # result = {'eval_loss': eval_loss,
-                #           'eval_accuracy': eval_accuracy,
-                #           'global_step': global_step,
-                #           'balanced_accuracy' : balanced_acc,
-                #           'f1_neg' : f1_neg,
-                #           'f1_pos' : f1_pos,
-                #           'mcc' : mcc,
-                #           'loss': tr_loss/nb_tr_steps}
-
-                # if best_mcc < mcc:
-                #     best_mcc = mcc
-                if best_f1 < f1:
-                    best_f1 = f1
+                if best_acc < acc:
+                    best_acc = acc
                     logger.info("Saving model...")
                     model_to_save = model.module if hasattr(model, 'module') else model  # To handle multi gpu
                     torch.save(model_to_save.state_dict(), args.output_file)
 
                 logger.info("***** Epoch " + str(epoch_num + 1) + " *****")
-                for key in sorted(result.keys()):
-                    logger.info("  %s = %.4f", key, result[key])
+                logger.info("  accuracy = %.4f", acc)
 
                 model.train() # back to training
 
@@ -981,161 +993,71 @@ def main():
     #             f.write(str(input_ids[i].numpy().tolist()) + "\t" + str(input_mask[i].numpy().tolist()) + "\t" + str(segment_ids[i].numpy().tolist()) + "\t" + str(label_ids[i].numpy().tolist()) + "\n")
 
     if args.do_test:
-
-        if length_fix:
-            label_map = {}
-            for (i, label) in enumerate(label_list):
-                label_map[label] = i
-
-        if args.error_anal:
-            all_df = pd.DataFrame(columns=["words", "gold", "pred"])
-
         if args.use_crf:
-            # model = BertCRF.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels, constraints=constraints, include_start_end_transitions=False)
-            model = BertForTokenClassification.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels)
+            model = BertCRF.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels, constraints=constraints, include_start_end_transitions=False)
         else:
             model = BertForTokenClassification.from_pretrained(args.bert_model, PYTORCH_PRETRAINED_BERT_CACHE, num_labels=num_labels)
 
         model.load_state_dict(torch.load(args.output_file))
         model.to(device)
-        if multi_gpu:
-            model = torch.nn.DataParallel(model, device_ids=device_ids)
-        else:
-            if device != torch.device("cpu"):
-                model = torch.nn.DataParallel(model)
+        if args.local_rank != -1:
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
+                                                          output_device=args.local_rank)
+        elif n_gpu > 1:
+            model = torch.nn.DataParallel(model)
 
         logger.info("***** Running evaluation on test *****")
         logger.info("  Num examples = %d", len(test_examples))
         logger.info("  Batch size = %d", args.train_batch_size)
 
         model.eval()
-        # total_rates = np.array([0,0,0,0])
-        all_input_ids = np.array([])
-
-        all_preds = np.array([])
-        all_label_ids = np.array([])
-        test_loss, test_accuracy = 0, 0
-        nb_test_steps, nb_test_examples = 0, 0
-        for input_ids, input_mask, segment_ids, label_ids, guids in test_dataloader:
-            # with open("sst-test.tsv", "a") as f:
-            #     for i in range(len(input_ids)):
-            #         f.write(str(input_ids[i].numpy().tolist()) + "\t" + str(input_mask[i].numpy().tolist()) + "\t" + str(segment_ids[i].numpy().tolist()) + "\t" + str(label_ids[i].numpy().tolist()) + "\n")
+        all_trigger_count = 0
+        all_argument_count = 0
+        corr_trigger_count = 0
+        corr_argument_count = 0
+        for input_ids, input_mask, segment_ids, doc_ids in test_dataloader:
 
             input_ids = input_ids.to(device)
             input_mask = input_mask.to(device)
             segment_ids = segment_ids.to(device)
-            label_ids = label_ids.to(device)
 
             with torch.no_grad():
-                if args.use_crf:
-                    crf_label_ids = label_ids.clone()
-                    crf_label_ids[crf_label_ids == -1] = num_labels - 1 # Make -1's last label. This doesn't affect score, because these are masked.
-                    tmp_test_loss, logits = model(input_ids, segment_ids, input_mask, crf_label_ids)
-                else:
-                    tmp_test_loss, logits = model(input_ids, segment_ids, input_mask, label_ids)
+                logits = model(input_ids, segment_ids, input_mask)
 
-            label_ids = label_ids.to('cpu').numpy()
+            logits = logits.detach().cpu().numpy()
+            logits = np.argmax(logits, axis=-1)
 
-            test_loss += tmp_test_loss.mean().item()
+            for idx,doc_id in enumerate(doc_ids):
+                elem = test_df.iloc[doc_id.item()]
+                if args.etype in elem.labels:
+                    token_labels = logits[idx,:]
+                    for event in elem.events:
+                        if args.etype != event["event_type"]:
+                            continue
+                        all_trigger_count += 1
+                        curr_labels = token_labels[event["trigger"]["start"]:event["trigger"]["end"]]
+                        if all([event["event_subtype"] in label_map[label] for label in curr_labels]):
+                            corr_trigger_count += 1
 
-            if not args.use_crf:
-                logits = logits.detach().cpu().numpy()
-                logits = np.argmax(logits, axis=-1)
+                        if args.task_name == "trigger":
+                            continue
+                        for argument in event["arguments"]:
+                            all_argument_count += 1
+                            curr_labels = token_labels[argument["start"]:argument["end"]]
+                            if all([argument["role"] in label_map[label] for label in curr_labels]):
+                                corr_argument_count += 1
 
-            if length_fix and not args.use_crf:
-                curr_exs = np.array(test_examples)[guids.numpy().tolist()]
-                input_mask = input_mask.cpu().numpy()
-                for idx,ex in enumerate(curr_exs):
-                    curr_label_ids = label_ids[idx,:]
+        if args.task_name == "trigger":
+            acc = corr_trigger_count / all_trigger_count
+        else:
+            trigger_acc = corr_trigger_count / all_trigger_count
+            argument_acc = corr_argument_count / all_argument_count
 
-                    # We do not just substract max_seq_length-1 because of our tokenization fix. -> It can populate input_ids with subwords and label_ids with -1 s.
-                    # if tokenization_fix:
-                    #     total_extras = 0
-                    #     for wrd in ex.text_a[1:]:
-                    #         curr_subwords = len(tokenizer.tokenize(wrd))
-                    #         if curr_subwords > 1:
-                    #             total_extras += curr_subwords - 1 # -1 for original word
-
-                    #     diff = len(ex.text_a[1:]) + total_extras - args.max_seq_length + 2
-
-                    # else:
-                    #     diff = len(ex.text_a[1:]) - args.max_seq_length + 2
-
-
-                    # if diff > 0: # This diff is to ascertain if our ids are padded or not. In this case they are not padded
-                    if input_mask[idx,-1] == 1: # If this is not a [PAD] token. So this was not padded
-                        # ipdb.set_trace()
-                        diff = len(ex.text_a[1:]) - len(curr_label_ids[curr_label_ids != -1]) # This is how much we are going to add
-
-                        all_preds = np.append(all_preds, logits[idx,curr_label_ids != -1].tolist() + [label_map["O"]] * diff) # we don't predict after max_seq_length, so we fill that with "O"
-                        all_label_ids = np.append(all_label_ids, [label_map[lab] for lab in ex.labels[1:]]) # start from 1 since the first one is for [CLS] token
-                    else: # In this case they are padded
-                        all_preds = np.append(all_preds, logits[idx,curr_label_ids != -1])
-                        all_label_ids = np.append(all_label_ids, curr_label_ids[curr_label_ids != -1])
-
-            else:
-                label_ids = label_ids.reshape(-1)
-
-                if args.use_crf:
-                    all_preds = np.append(all_preds, logits)
-                else:
-                    logits = logits.reshape(-1)
-                    all_preds = np.append(all_preds, logits[label_ids != -1])
-
-                all_label_ids = np.append(all_label_ids, label_ids[label_ids != -1])
-
-                if args.error_anal:
-                    curr_labels = [idtolabel[x] for x in label_ids[label_ids != -1]]
-                    curr_preds = [idtolabel[x] for x in logits[label_ids != -1]]
-                    curr_words = np.array(test_examples)[guids.numpy().tolist()]
-                    prev_idx = 0
-                    for curr_doc in curr_words:
-                        curr_text = curr_doc.text_a[1:]
-                        all_df = all_df.append({"words":curr_text, "gold":curr_labels[prev_idx:prev_idx+len(curr_text)], "pred":curr_preds[prev_idx:prev_idx+len(curr_text)]}, ignore_index=True)
-                        prev_idx += len(curr_text)
-
-            nb_test_steps += 1
-
-        test_loss = test_loss / nb_test_steps
-        test_accuracy = accuracy(all_preds, all_label_ids)
-
-        # TODO : fix testing by predicting rest of document as "O" and not limiting labels size to 512
-
-        # precision, recall, f1, _ = precision_recall_fscore_support(all_label_ids, all_preds, average="macro", labels=list(range(0,num_labels)))
-        (precision, recall, f1), out_json = evaluate2([idtolabel[x] for x in all_label_ids.tolist()], [idtolabel[x] for x in all_preds.tolist()])
-        mcc = matthews_corrcoef(all_label_ids, all_preds)
-        result = {"test_loss": test_loss,
-                  "test_accuracy": test_accuracy,
-                  "precision": precision,
-                  "recall": recall,
-                  "f1": f1,
-                  "mcc": mcc}
-
-        if args.scores_matrix:
-            scores = pd.DataFrame(out_json)
-            scores = scores.T
-            scores.columns = ["Precision Macro", "Recall Macro", "F1 Macro"]
-            scores = scores.applymap(lambda x: '{0:,.2f}'.format(x)) # They are all strings now
-            scores.to_html(re.sub(r"^(.+)\.pt$", r"\g<1>_scores.html", args.output_file))
-
-        # balanced_acc, f1_neg, f1_pos, mcc, recall_pos, precision_pos = get_scores(total_rates.tolist())
-        # result = {'test_loss': test_loss,
-        #           'test_accuracy': test_accuracy,
-        #           'global_step': global_step,
-        #           'balanced_accuracy' : balanced_acc,
-        #           'f1_neg' : f1_neg,
-        #           'f1_pos' : f1_pos,
-        #           'recall_pos' : recall_pos,
-        #           'precision_pos' : precision_pos,
-        #           'mcc' : mcc}
+            acc = (trigger_acc + argument_acc) / 2
 
         logger.info("***** Test Eval results *****")
-        for key in sorted(result.keys()):
-            logger.info("  %s = %.4f", key, result[key])
+        logger.info("  accuracy = %.4f", acc)
 
-
-        if args.error_anal:
-            all_df.to_json(re.sub(r"^(.+)\.pt$", r"\g<1>_error_anal.json", args.output_file), orient="records", lines=True, force_ascii=False)
 
 if __name__ == "__main__":
     main()
